@@ -356,22 +356,35 @@ public final class Keys {
                 String[] d = arg.split(",");
                 mouseX = Math.max(0, Math.min(screenW - 1, mouseX + Integer.parseInt(d[0].trim())));
                 mouseY = Math.max(0, Math.min(screenH - 1, mouseY + Integer.parseInt(d[1].trim())));
-                return pointer(manager, inject, MotionEvent.ACTION_HOVER_MOVE, 0, 0f, 0, ASYNC);
+                return pointer(manager, inject, MotionEvent.ACTION_HOVER_MOVE, 0, 0f, 0, 0, ASYNC);
             }
             case 'c': {
+                // A real mouse click: the pointer arrives, the button goes down (its press event with it), a
+                // moment passes, then the release and the lift.
                 long down = SystemClock.uptimeMillis();
-                return pointer(manager, inject, MotionEvent.ACTION_DOWN, MotionEvent.BUTTON_PRIMARY, 0f, down, WAIT_FOR_FINISH)
-                    && pointer(manager, inject, MotionEvent.ACTION_UP, 0, 0f, down, WAIT_FOR_FINISH);
+                int primary = MotionEvent.BUTTON_PRIMARY;
+                boolean ok = pointer(manager, inject, MotionEvent.ACTION_HOVER_MOVE, 0, 0f, 0, 0, WAIT_FOR_FINISH)
+                    && pointer(manager, inject, MotionEvent.ACTION_DOWN, primary, 0f, down, 0, WAIT_FOR_FINISH)
+                    && pointer(manager, inject, MotionEvent.ACTION_BUTTON_PRESS, primary, 0f, down, primary, WAIT_FOR_FINISH);
+                try {
+                    Thread.sleep(40);
+                } catch (InterruptedException e) {
+                    // Releases now.
+                }
+                // Released whatever came before, so the button is never left down on the TV.
+                boolean up = pointer(manager, inject, MotionEvent.ACTION_BUTTON_RELEASE, 0, 0f, down, primary, WAIT_FOR_FINISH)
+                    && pointer(manager, inject, MotionEvent.ACTION_UP, 0, 0f, down, 0, WAIT_FOR_FINISH);
+                return ok && up;
             }
             case 's':
-                return pointer(manager, inject, MotionEvent.ACTION_SCROLL, 0, Integer.parseInt(arg.trim()), 0, WAIT_FOR_FINISH);
+                return pointer(manager, inject, MotionEvent.ACTION_SCROLL, 0, Integer.parseInt(arg.trim()), 0, 0, WAIT_FOR_FINISH);
             default:
                 return false;
         }
     }
 
     /** Injects one mouse event at the pointer's place; [downTime] 0 is now. */
-    private static boolean pointer(Object manager, Method inject, int action, int buttons, float wheel, long downTime, int mode) throws Exception {
+    private static boolean pointer(Object manager, Method inject, int action, int buttons, float wheel, long downTime, int actionButton, int mode) throws Exception {
         MotionEvent.PointerProperties props = new MotionEvent.PointerProperties();
         props.id = 0;
         props.toolType = MotionEvent.TOOL_TYPE_MOUSE;
@@ -385,6 +398,7 @@ public final class Keys {
         MotionEvent e = MotionEvent.obtain(downTime != 0 ? downTime : now, now, action, 1,
             new MotionEvent.PointerProperties[] { props }, new MotionEvent.PointerCoords[] { coords },
             0, buttons, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0);
+        if (actionButton != 0) e.setActionButton(actionButton);
         try {
             return (Boolean) inject.invoke(manager, e, mode);
         } finally {

@@ -75,7 +75,11 @@ class Remote(private val session: AdbSession, private val keys: KeyHelper? = nul
      * still works then, just without the arrow. Throws if the link is gone.
      */
     suspend fun startCursor(apk: ByteArray): Boolean {
-        if (!session.shell("pm path $CURSOR_PACKAGE 2>/dev/null").output.contains("package:")) {
+        val dump = session.shell("dumpsys package $CURSOR_PACKAGE 2>/dev/null | grep -m1 versionCode").output
+        val have = Regex("versionCode=(\\d+)").find(dump)?.groupValues?.get(1)?.toIntOrNull()
+        if (have != CURSOR_VERSION) {
+            // Another build's copy is signed with another debug key, so it goes first rather than updating.
+            if (have != null) session.shell("pm uninstall $CURSOR_PACKAGE 2>&1")
             session.push(apk, CURSOR_APK)
             val r = session.shell("pm install -r -g $CURSOR_APK 2>&1; rm -f $CURSOR_APK")
             if (!r.output.contains("Success")) return false
@@ -182,6 +186,9 @@ class Remote(private val session: AdbSession, private val keys: KeyHelper? = nul
 
         /** The pointer app, and where its APK waits on the TV while it installs. */
         const val CURSOR_PACKAGE = "app.tellyscope.cursor"
+
+        /** The versionCode of the bundled pointer app (cursor/build.gradle.kts). */
+        const val CURSOR_VERSION = 2
         const val CURSOR_APK = "/data/local/tmp/tellyscope-cursor.apk"
 
         /** Fire TV's Settings, from Amazon's launcher: Fire OS 6 and later, then Fire OS 5. */

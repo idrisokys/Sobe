@@ -15,7 +15,8 @@ android {
         minSdk = 26
         // Under 34, so its foreground service needs no declared type.
         targetSdk = 28
-        versionCode = 1
+        // Remote.CURSOR_VERSION: Tellyscope reinstalls the pointer when the TV has another version.
+        versionCode = 2
         versionName = "1.0"
     }
 
