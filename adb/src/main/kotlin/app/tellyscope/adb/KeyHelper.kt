@@ -46,6 +46,9 @@ class KeyHelper(val session: AdbSession, private val dex: ByteArray) : AutoClose
     /** Moves the TV's pointer [dx], [dy] pixels; answers like [press]. */
     suspend fun mouseMove(dx: Int, dy: Int): Boolean? = send("mm$dx,$dy")
 
+    /** Takes the pointer overlay off the TV's screen; answers like [press]. */
+    suspend fun mouseOff(): Boolean? = send("mo")
+
     /** Clicks where the pointer is; answers like [press]. */
     suspend fun mouseClick(): Boolean? = send("mc")
 

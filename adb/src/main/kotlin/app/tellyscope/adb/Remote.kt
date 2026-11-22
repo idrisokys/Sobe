@@ -31,6 +31,8 @@ sealed interface MouseAction {
     data class Move(val dx: Int, val dy: Int) : MouseAction
     /** A click where the pointer is. */
     object Click : MouseAction
+    /** The mouse is put away: the pointer overlay goes off the TV's screen. */
+    object Off : MouseAction
     /** The wheel turns [steps] notches, negative for down. */
     data class Scroll(val steps: Int) : MouseAction
 }
@@ -63,6 +65,7 @@ class Remote(private val session: AdbSession, private val keys: KeyHelper? = nul
     suspend fun mouse(action: MouseAction): Boolean = when (action) {
         is MouseAction.Move -> keys?.mouseMove(action.dx, action.dy)
         MouseAction.Click -> keys?.mouseClick()
+        MouseAction.Off -> keys?.mouseOff()
         is MouseAction.Scroll -> keys?.mouseScroll(action.steps)
     } ?: false
 

@@ -101,6 +101,27 @@ public final class Keys {
             out.print(ok ? "1\n" : "0\n");
             out.flush();
         }
+        if (overlayOn) overlay(false, true);
+    }
+
+    private static boolean overlayOn;
+
+    /**
+     * Android's own Pointer location overlay (a crosshair and the pointer's numbers), the one pointer
+     * a TV draws for injected mouse events, which have no cursor. Turned on with the mouse's first
+     * move and off with {@code mo} or when the helper ends. Waits for the settings command only when
+     * [wait]; the first move shouldn't.
+     */
+    private static void overlay(boolean on, boolean wait) {
+        overlayOn = on;
+        Runnable run = () -> {
+            try {
+                new ProcessBuilder("settings", "put", "system", "pointer_location", on ? "1" : "0").start().waitFor();
+            } catch (Throwable t) {
+                // The mouse works without it.
+            }
+        };
+        if (wait) run.run(); else new Thread(run).start();
     }
 
     /**
@@ -277,6 +298,11 @@ public final class Keys {
     private static boolean mouse(Object manager, Method inject, String cmd) throws Exception {
         if (!sized) { sized = true; size(); }
         if (cmd.isEmpty()) return false;
+        if (cmd.charAt(0) == 'o') {
+            if (overlayOn) overlay(false, false);
+            return true;
+        }
+        if (!overlayOn) overlay(true, false);
         String arg = cmd.substring(1);
         switch (cmd.charAt(0)) {
             case 'm': {

@@ -1968,8 +1968,17 @@ class TellyscopeViewModel(
 
     /** The touchpad (true) or the D-pad on the Remote, kept for this phone. */
     fun setTouchpad(on: Boolean) {
+        if (_state.value.mouse) mouseOff()
         _state.update { it.copy(touchpad = on, mouse = false) }
         viewModelScope.launch(Dispatchers.IO) { keyHaptics?.touchpad = on }
+    }
+
+    /** Puts the TV's pointer overlay away once the mouse is left; best effort. */
+    private fun mouseOff() {
+        val id = _state.value.selectedId ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { keys.withLock { source.mouse(id, MouseAction.Off) } }
+        }
     }
 
     /** The mouse (true) in the D-pad's place on the Remote, kept for this phone; the touchpad goes. */
