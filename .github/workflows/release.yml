@@ -1,10 +1,9 @@
 name: Release
 
+# Off on every push: it needs the project's signing secrets, which a fork doesn't have.
+# Run it by hand from the Actions tab if the secrets are ever set.
 on:
-  push:
-    branches: [main, dev]
-    # Alpha tags only. Prod's vX.Y.Z tags have no "-alpha." and don't match.
-    tags: ['v*-alpha.*']
+  workflow_dispatch:
 
 permissions:
   contents: read
