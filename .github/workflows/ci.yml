@@ -28,8 +28,15 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v6
 
-      # build = assemble (debug + release) + unit tests + Android lint
-      - run: sh ./gradlew build --console=plain
+      # Only the debug APK: no unit tests, no lint, no release builds.
+      - run: sh ./gradlew :app:assembleGithubDebug --console=plain
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: tellyscope-debug-apk
+          path: app/build/outputs/apk/github/debug/*.apk
+          retention-days: 14
 
       - name: Upload reports on failure
         if: failure()
