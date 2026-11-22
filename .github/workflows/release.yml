@@ -123,7 +123,7 @@ jobs:
           RELEASE_KEYSTORE: ${{ runner.temp }}/alpha.jks
           RELEASE_KEY_ALIAS: ${{ secrets.ALPHA_KEY_ALIAS }}
           RELEASE_KEY_PASSWORD: ${{ secrets.ALPHA_KEY_PASSWORD }}
-        run: ./gradlew :app:assembleGithubRelease -Ptellyscope.alpha=${{ steps.tag.outputs.n }} --console=plain
+        run: sh ./gradlew :app:assembleGithubRelease -Ptellyscope.alpha=${{ steps.tag.outputs.n }} --console=plain
 
       - name: Alpha pre-release
         env:
@@ -203,7 +203,7 @@ jobs:
           RELEASE_KEYSTORE: ${{ runner.temp }}/release.jks
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
-        run: ./gradlew :app:assembleGithubRelease --console=plain
+        run: sh ./gradlew :app:assembleGithubRelease --console=plain
 
       # Notes: the version's CHANGELOG.md section, then every commit since the
       # previous tag.
@@ -267,7 +267,7 @@ jobs:
           RELEASE_KEYSTORE: ${{ runner.temp }}/release.jks
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
-        run: ./gradlew :app:bundlePlayRelease --console=plain
+        run: sh ./gradlew :app:bundlePlayRelease --console=plain
 
       - name: Rename
         env:

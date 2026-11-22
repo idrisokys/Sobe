@@ -29,7 +29,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
 
       # build = assemble (debug + release) + unit tests + Android lint
-      - run: ./gradlew build --console=plain
+      - run: sh ./gradlew build --console=plain
 
       - name: Upload reports on failure
         if: failure()
