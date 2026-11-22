@@ -296,13 +296,13 @@ public final class Keys {
 
     /** One mouse command: see the class comment. False when the TV took none of it. */
     private static boolean mouse(Object manager, Method inject, String cmd) throws Exception {
-        if (!sized) { sized = true; size(); }
+        // An earlier build turned Pointer location on; this one never does, so it puts it away once.
+        if (!sized) { sized = true; size(); overlay(false, false); }
         if (cmd.isEmpty()) return false;
         if (cmd.charAt(0) == 'o') {
             if (overlayOn) overlay(false, false);
             return true;
         }
-        if (!overlayOn) overlay(true, false);
         String arg = cmd.substring(1);
         switch (cmd.charAt(0)) {
             case 'm': {
