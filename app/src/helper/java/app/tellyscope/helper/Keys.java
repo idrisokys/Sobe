@@ -102,9 +102,49 @@ public final class Keys {
             out.flush();
         }
         if (overlayOn) overlay(false, true);
+        cursorClose();
     }
 
     private static boolean overlayOn;
+
+    /** The pointer app's port on this TV, and the connection to it, opened on the first move. */
+    private static final int CURSOR_PORT = 47831;
+    private static java.net.Socket cursorSocket;
+    private static java.io.OutputStream cursorOut;
+    private static long cursorTried;
+
+    /**
+     * Tells the pointer app one line: {@code x y} or {@code h}. It may not be up yet (it starts when the
+     * mouse is first used), so a failed connect is tried again after a moment; the mouse works without it.
+     */
+    private static void cursor(String line) {
+        try {
+            if (cursorOut == null) {
+                long now = SystemClock.uptimeMillis();
+                if (cursorTried != 0 && now - cursorTried < 1500) return;
+                cursorTried = now;
+                java.net.Socket s = new java.net.Socket();
+                s.connect(new java.net.InetSocketAddress("127.0.0.1", CURSOR_PORT), 150);
+                s.setTcpNoDelay(true);
+                cursorSocket = s;
+                cursorOut = s.getOutputStream();
+            }
+            cursorOut.write((line + "\n").getBytes("UTF-8"));
+            cursorOut.flush();
+        } catch (Throwable t) {
+            cursorClose();
+        }
+    }
+
+    private static void cursorClose() {
+        try {
+            if (cursorSocket != null) cursorSocket.close();
+        } catch (Throwable t) {
+            // Gone already.
+        }
+        cursorSocket = null;
+        cursorOut = null;
+    }
 
     /**
      * Android's own Pointer location overlay (a crosshair and the pointer's numbers), the one pointer
@@ -301,10 +341,17 @@ public final class Keys {
         if (cmd.isEmpty()) return false;
         if (cmd.charAt(0) == 'o') {
             if (overlayOn) overlay(false, false);
+            cursor("h");
             return true;
         }
         String arg = cmd.substring(1);
-        switch (cmd.charAt(0)) {
+        boolean ok = mouseCommand(manager, inject, cmd.charAt(0), arg);
+        cursor(Math.round(mouseX) + " " + Math.round(mouseY));
+        return ok;
+    }
+
+    private static boolean mouseCommand(Object manager, Method inject, char op, String arg) throws Exception {
+        switch (op) {
             case 'm': {
                 String[] d = arg.split(",");
                 mouseX = Math.max(0, Math.min(screenW - 1, mouseX + Integer.parseInt(d[0].trim())));

@@ -69,6 +69,22 @@ class Remote(private val session: AdbSession, private val keys: KeyHelper? = nul
         is MouseAction.Scroll -> keys?.mouseScroll(action.steps)
     } ?: false
 
+    /**
+     * Makes sure the pointer app (the [apk] bundled in Tellyscope) is on the TV, may draw over other
+     * apps, and is running, so the mouse has an arrow to show. False when any step failed; the mouse
+     * still works then, just without the arrow. Throws if the link is gone.
+     */
+    suspend fun startCursor(apk: ByteArray): Boolean {
+        if (!session.shell("pm path $CURSOR_PACKAGE 2>/dev/null").output.contains("package:")) {
+            session.push(apk, CURSOR_APK)
+            val r = session.shell("pm install -r -g $CURSOR_APK 2>&1; rm -f $CURSOR_APK")
+            if (!r.output.contains("Success")) return false
+        }
+        session.shell("appops set $CURSOR_PACKAGE SYSTEM_ALERT_WINDOW allow 2>&1")
+        val r = session.shell("am start-foreground-service -n $CURSOR_PACKAGE/.CursorService 2>&1")
+        return r.exitCode == 0 && !r.output.contains("Error")
+    }
+
     /** [press] [times] over, stopping at the first key the TV didn't take. */
     suspend fun press(key: RemoteKey, times: Int): Boolean = (1..times).all { press(key) }
 
@@ -163,6 +179,10 @@ class Remote(private val session: AdbSession, private val keys: KeyHelper? = nul
 
     companion object {
         const val MAX_TEXT = 200
+
+        /** The pointer app, and where its APK waits on the TV while it installs. */
+        const val CURSOR_PACKAGE = "app.tellyscope.cursor"
+        const val CURSOR_APK = "/data/local/tmp/tellyscope-cursor.apk"
 
         /** Fire TV's Settings, from Amazon's launcher: Fire OS 6 and later, then Fire OS 5. */
         val FIRE_SETTINGS = listOf("com.amazon.tv.launcher/.ui.MainSettingsActivity", "com.amazon.tv.launcher/.ui.SettingsActivity")

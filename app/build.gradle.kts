@@ -169,6 +169,24 @@ val bundleChangelog by tasks.registering(BundleChangelog::class) {
     outputDir = layout.buildDirectory.dir("generated/changelog/assets")
 }
 
+/** The TV pointer app (:cursor, debug-signed so a TV installs it), shipped as an asset for Tellyscope to install. */
+abstract class BundleCursor : DefaultTask() {
+    @get:InputFiles abstract val apkDir: ConfigurableFileCollection
+    @get:OutputDirectory abstract val outputDir: DirectoryProperty
+
+    @TaskAction fun copy() {
+        val out = outputDir.get().asFile.also { it.deleteRecursively(); it.mkdirs() }
+        val apk = apkDir.asFileTree.matching { include("**/*.apk") }.files.single()
+        apk.copyTo(out.resolve("cursor.apk"))
+    }
+}
+
+val bundleCursor by tasks.registering(BundleCursor::class) {
+    dependsOn(":cursor:assembleDebug")
+    apkDir.from(project(":cursor").layout.buildDirectory.dir("outputs/apk/debug"))
+    outputDir = layout.buildDirectory.dir("generated/cursor/assets")
+}
+
 /** Fails the build when a release APK grows past the 3.5 MB budget. CI's `build` and release.yml both assemble release. */
 abstract class CheckApkSize : DefaultTask() {
     @get:InputFiles abstract val apkDir: DirectoryProperty
@@ -217,6 +235,7 @@ androidComponents {
     onVariants { variant ->
         variant.sources.assets?.addGeneratedSourceDirectory(dexLabelHelper, DexLabelHelper::outputDir)
         variant.sources.assets?.addGeneratedSourceDirectory(bundleChangelog, BundleChangelog::outputDir)
+        variant.sources.assets?.addGeneratedSourceDirectory(bundleCursor, BundleCursor::outputDir)
     }
     onVariants(selector().withBuildType("release")) { variant ->
         val name = variant.name.replaceFirstChar { it.uppercase() }

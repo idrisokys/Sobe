@@ -132,6 +132,8 @@ class AdbDeviceSource(
     private val volumeSteps = ConcurrentHashMap<String, Pair<AdbSession, Int>>()
     /** The remote's key helper on each TV, while the remote is open. */
     private val keyHelpers = ConcurrentHashMap<String, KeyHelper>()
+    private val cursors = ConcurrentHashMap<String, AdbSession>()
+    private val cursorApk by lazy { appContext.assets.open("cursor.apk").use { it.readBytes() } }
     private val helperDex by lazy { appContext.assets.open("label-helper.jar").use { it.readBytes() } }
     private val appNames = AppNames(File(appContext.filesDir, "app-names"))
     private val lists = DeviceLists(File(appContext.filesDir, "lists"))
@@ -1090,7 +1092,24 @@ class AdbDeviceSource(
         else remote(deviceId).press(key)
     }
 
-    override suspend fun mouse(deviceId: String, action: MouseAction) = busy(deviceId) { remote(deviceId).mouse(action) }
+    /**
+     * The pointer app is put on the TV and started once per link, the first time the mouse is used; a
+     * reconnect starts it again. A TV that won't take it still gets the mouse, without the arrow.
+     */
+    override suspend fun mouse(deviceId: String, action: MouseAction) = busy(deviceId) {
+        val session = session(deviceId)
+        if (action != MouseAction.Off && cursors[deviceId] !== session) {
+            try {
+                Remote(session).startCursor(cursorApk)
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // No arrow, then.
+            }
+            cursors[deviceId] = session
+        }
+        remote(deviceId).mouse(action)
+    }
 
     /**
      * Keys per volume tap, so a tap moves about 1/[Remote.VOLUME_STEPS] of the range on any TV. Read

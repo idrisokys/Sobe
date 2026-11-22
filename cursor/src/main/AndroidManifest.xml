@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:allowBackup="false"
+        android:label="Tellyscope pointer">
+        <!-- Started from the TV's shell by Tellyscope (am start-foreground-service), so exported. -->
+        <service
+            android:name=".CursorService"
+            android:exported="true" />
+    </application>
+</manifest>
