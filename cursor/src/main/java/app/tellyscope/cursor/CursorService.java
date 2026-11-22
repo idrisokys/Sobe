@@ -91,6 +91,9 @@ public final class CursorService extends Service {
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT);
         params.gravity = Gravity.TOP | Gravity.LEFT;
+        // Android 12+ drops touches that pass through another app's overlay more opaque than 0.8, and the
+        // arrow always sits where the click lands, so it stays under that.
+        params.alpha = 0.75f;
         windows.addView(arrow, params);
     }
 
