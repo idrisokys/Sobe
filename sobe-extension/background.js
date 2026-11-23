@@ -1,4 +1,4 @@
-importScripts("hls-parse.js", "dash-parse.js");
+importScripts("hls-parse.js", "dash-parse.js", "series.js");
 
 const VIDEO_EXT = /\.(mp4|webm|mkv|mov|m4v|ogv)(\?|#|$)/i;
 const HLS_RE = /\.m3u8(\?|#|$)/i;
@@ -36,8 +36,8 @@ async function getList(tabId) {
   return r[key(tabId)] || [];
 }
 async function getSettings() {
-  const r = await chrome.storage.local.get({ above: true, below: true, auto: true, off: false });
-  return { above: !!r.above, below: !!r.below, auto: !!r.auto, off: !!r.off };
+  const r = await chrome.storage.local.get({ above: true, below: true, off: false });
+  return { above: !!r.above, below: !!r.below, off: !!r.off };
 }
 const itemHeights = (v) => (v.heights && v.heights.length ? v.heights : v.height ? [v.height] : null);
 // 1080p ve üstü / 1080p ve altı kutucukları; ikisi de seçili (ya da ikisi de boş) = filtre yok
@@ -86,22 +86,6 @@ async function addItem(tabId, item) {
   if (item.kind === "file" && pendingDims.has(item.url)) item.height = pendingDims.get(item.url);
   list.push(item);
   await setList(tabId, list);
-  scheduleAuto(tabId, item.url);
-}
-
-/* ---------- otomatik sıraya ekleme ---------- */
-// Kısa bekleme: ana liste (master) gelirse alt listeler elenir, çözünürlük bilgisi ve sayfa başlığı oturur
-function scheduleAuto(tabId, url) {
-  setTimeout(() => autoEnqueue(tabId, url).catch(console.error), 2500);
-}
-async function autoEnqueue(tabId, url) {
-  const st = await getSettings();
-  if (st.off || !st.auto) return;
-  const item = (await getList(tabId)).find((v) => v.url === url);
-  if (!item || item.live || !passes(item, st)) return; // elenmiş / canlı / kalite filtresine uymuyor
-  let tab;
-  try { tab = await chrome.tabs.get(tabId); } catch { return; }
-  await queueDownload(tab, item.url, item.kind, item.ext, true, item);
 }
 
 /* ---------- Referer ayarı (indirme/çekme isteklerinde) ---------- */
@@ -123,7 +107,7 @@ async function setReferer(ref) {
 }
 
 /* ---------- tespit ---------- */
-async function handleHls(tabId, url) {
+async function handleHls(tabId, url, pre = null) {
   if (await isOff()) return;
   const exists = (await getList(tabId)).some((v) => v.url === url);
   if (exists) return;
@@ -131,9 +115,12 @@ async function handleHls(tabId, url) {
   try { tab = await chrome.tabs.get(tabId); } catch { return; }
   let parsed = null;
   try {
-    await setReferer(tab.url);
-    const r = await fetch(url, { credentials: "include" });
-    if (r.ok) parsed = parsePlaylist(await r.text(), url);
+    if (pre != null) parsed = parsePlaylist(pre, url);
+    else {
+      await setReferer(tab.url);
+      const r = await fetch(url, { credentials: "include" });
+      if (r.ok) parsed = parsePlaylist(await r.text(), url);
+    }
   } catch {}
   let item = { url, size: 0, ext: "ts", kind: "hls", label: "HLS" };
   if (parsed && parsed.master) {
@@ -195,6 +182,36 @@ async function handleFound(tabId, url) {
   } catch {}
 }
 
+/* ---------- uzantısız / türü gizlenmiş HLS listelerini içeriğinden tanı ---------- */
+// Bazı siteler m3u8'i /w/abc123 gibi adreslerde "application/octet-stream" olarak sunar.
+const SNIFF_TYPES = new Set(["", "application/octet-stream", "binary/octet-stream", "text/plain", "application/x-unknown", "application/unknown"]);
+const STATIC_EXT = /\.(js|mjs|css|json|jpe?g|png|gif|webp|avif|svg|ico|woff2?|ttf|ts|m4s|mp4|webm|html?|xml|map)(\?|#|$)/i;
+const sniffed = new Set();
+function maybePlaylist(url, type, h) {
+  if (!SNIFF_TYPES.has(type) || STATIC_EXT.test(url)) return false;
+  return parseInt(h["content-length"] || "0", 10) <= 2 * 1024 * 1024;
+}
+async function sniffPlaylist(tabId, url) {
+  if (sniffed.has(url) || (await isOff())) return;
+  sniffed.add(url);
+  if (sniffed.size > 800) sniffed.delete(sniffed.values().next().value);
+  let tab;
+  try { tab = await chrome.tabs.get(tabId); } catch { return; }
+  try {
+    await setReferer(tab.url);
+    const r = await fetch(url, { credentials: "include" });
+    if (!r.ok || !r.body) return;
+    const reader = r.body.getReader();
+    const first = await reader.read();
+    const head = new TextDecoder().decode((first.value || new Uint8Array()).subarray(0, 16)).trim();
+    if (!head.startsWith("#EXTM3U")) { reader.cancel().catch(() => {}); return; }
+    const chunks = [first.value];
+    for (;;) { const x = await reader.read(); if (x.done) break; chunks.push(x.value); }
+    const text = new TextDecoder().decode(await new Blob(chunks).arrayBuffer());
+    await handleHls(tabId, url, text);
+  } catch {}
+}
+
 chrome.webRequest.onHeadersReceived.addListener((d) => {
   if (d.tabId < 0) return;
   const h = {};
@@ -209,6 +226,7 @@ chrome.webRequest.onHeadersReceived.addListener((d) => {
     handleDash(d.tabId, d.url);
     return;
   }
+  if (maybePlaylist(d.url, type, h)) { sniffPlaylist(d.tabId, d.url); return; }
   if (SEGMENT_RE.test(d.url) || CHUNK_RE.test(d.url)) return;
   const isVideo = type.startsWith("video/") || (VIDEO_EXT.test(d.url) && !type.startsWith("text/"));
   if (!isVideo) return;
@@ -241,12 +259,20 @@ const addJob = (job) => jobEnq(async () => {
   await chrome.storage.session.set({ jobs });
 });
 const isEnd = (p) => p.state === "done" || p.state === "error";
+// Başarıyla biten işler listeden hemen kalkar (not içerenler ve hatalılar "Temizle"ye kadar kalır)
+async function commitJobs(jobs, j) {
+  if (j.state === "done" && j.text === "Bitti ✓") {
+    jobs = jobs.filter((x) => x !== j);
+    if (j.fromSeries) bumpDownloaded();
+  }
+  await chrome.storage.session.set({ jobs });
+}
 const patchJob = (id, patch) => jobEnq(async () => {
   const jobs = await getJobs();
   const j = jobs.find((x) => x.id === id);
   if (!j) return;
   Object.assign(j, patch);
-  await chrome.storage.session.set({ jobs });
+  await commitJobs(jobs, j);
   if (isEnd(patch)) pump();
 });
 const patchByDl = (dlId, patch) => jobEnq(async () => {
@@ -254,7 +280,7 @@ const patchByDl = (dlId, patch) => jobEnq(async () => {
   const j = jobs.find((x) => x.kind === "file" && x.dlId === dlId);
   if (!j) return;
   Object.assign(j, patch);
-  await chrome.storage.session.set({ jobs });
+  await commitJobs(jobs, j);
   if (isEnd(patch)) pump();
 });
 
@@ -365,7 +391,7 @@ async function setDlReferer(ref) {
 
 /* ---------- indirme ---------- */
 // auto=true: aynı adres bu oturumda daha önce otomatik eklendiyse (bitmiş, silinmiş ya da sayfa yenilenmiş olsa da) tekrar eklenmez
-async function queueDownload(tab, url, kind, ext, auto = false, item = null) {
+async function queueDownload(tab, url, kind, ext, auto = false, item = null, fromSeries = false) {
   const name = sanitize(tab.title);
   const isStream = kind === "hls" || kind === "dash";
   const filename = `${name}.${ext}`;
@@ -381,7 +407,7 @@ async function queueDownload(tab, url, kind, ext, auto = false, item = null) {
       await chrome.storage.session.set({ autoSeen: seen.slice(-500) });
     }
     jobs.push({
-      id: crypto.randomUUID(), url, ref: tab.url, kind, state: "queued", pct: 0,
+      id: crypto.randomUUID(), url, ref: tab.url, kind, state: "queued", pct: 0, fromSeries,
       name: isStream ? name : filename, filename, text: "Sırada bekliyor…"
     });
     await chrome.storage.session.set({ jobs });
@@ -464,6 +490,138 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === "jobsClear") {
     removeJobs((j) => j.state === "done" || j.state === "error");
+    return;
+  }
+});
+
+/* ---------- SERİ MODU: bölüm numarasını artırarak sırayla gez + indir ---------- */
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const SERIES_TIMEOUT = 40000; // bir bölümde video beklenecek en uzun süre
+const SERIES_SETTLE = 3000;   // video göründükten sonra (ana liste/çözünürlük otursun diye) bekleme
+let serQ = Promise.resolve();
+const serEnq = (fn) => (serQ = serQ.then(fn).catch(console.error));
+const getSeries = async () => (await chrome.storage.session.get("series")).series || null;
+const seriesRunning = async () => !!(await getSeries())?.running;
+const setSeries = (patch) => serEnq(async () => {
+  const s = await getSeries();
+  if (!s) return;
+  if (!("running" in patch) && !s.running) return; // durdurulduktan sonra durum metnini ezme
+  await chrome.storage.session.set({ series: { ...s, ...patch } });
+});
+function bumpDownloaded() {
+  serEnq(async () => {
+    const s = await getSeries();
+    if (s) await chrome.storage.session.set({ series: { ...s, downloaded: (s.downloaded || 0) + 1 } });
+  });
+}
+const finishSeries = (text) => setSeries({ running: false, status: text });
+
+// Sekmeyi adrese götürür; yükleme bitince (en çok 40 sn) çözülür
+function navigate(tabId, url) {
+  return new Promise((resolve, reject) => {
+    let started = false;
+    const done = () => { clearTimeout(t); chrome.tabs.onUpdated.removeListener(l); resolve(); };
+    const t = setTimeout(done, 40000);
+    const l = (id, info) => {
+      if (id !== tabId) return;
+      if (info.status === "loading") started = true;
+      if (info.status === "complete" && started) done();
+    };
+    chrome.tabs.onUpdated.addListener(l);
+    chrome.tabs.update(tabId, { url }).catch((e) => { clearTimeout(t); chrome.tabs.onUpdated.removeListener(l); reject(e); });
+  });
+}
+
+function pickItem(list, st) {
+  const best = (v) => Math.max(0, ...(itemHeights(v) || []));
+  return list.filter((v) => !v.live && passes(v, st))
+    .sort((a, b) => best(b) - best(a) || (b.size || 0) - (a.size || 0))[0] || null;
+}
+
+let lastScan = "";
+async function waitForVideo(tabId, alt = 0) {
+  const t0 = Date.now();
+  let firstSeen = 0;
+  lastScan = "";
+  while (Date.now() - t0 < SERIES_TIMEOUT) {
+    if (!(await seriesRunning())) return null;
+    chrome.tabs.sendMessage(tabId, { type: "tryPlay", alt }).catch(() => {}); // tüm çerçevelerde oynatmayı dene
+    const list = await getList(tabId), cfg = await getSettings();
+    const item = pickItem(list, cfg);
+    lastScan = `algılanan: ${list.length}, canlı: ${list.filter((v) => v.live).length}, filtreye takılan: ${list.filter((v) => !v.live && !passes(v, cfg)).length}`;
+    if (item) { firstSeen ||= Date.now(); if (Date.now() - firstSeen >= SERIES_SETTLE) return item; }
+    else firstSeen = 0;
+    await sleep(1000);
+  }
+  return null;
+}
+
+let seriesLoop = false;
+async function runSeries() {
+  if (seriesLoop) return;
+  seriesLoop = true;
+  const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(), 20000); // servis uyumasın
+  try {
+    while (true) {
+      const s = await getSeries();
+      if (!s || !s.running) break;
+      if (s.last && s.n > s.last) { await finishSeries(`Bitti ✓ ${s.count || 0} bölüm sıraya eklendi (son: ${s.last})`); break; }
+      const url = episodeUrl(s.tpl, s.n);
+      await setSeries({ status: `${s.n}. bölüm kontrol ediliyor…` });
+
+      try { // sayfa hiç yoksa bölümler bitmiştir
+        const r = await fetch(url, { credentials: "include" });
+        if (r.status === 404 || r.status === 410) {
+          await finishSeries(`${s.n}. bölüm sayfası yok. Bitti ✓ ${s.count || 0} bölüm sıraya eklendi`);
+          break;
+        }
+      } catch {}
+
+      let item = null;
+      for (let attempt = 0; attempt < 3 && !item; attempt++) {
+        await setSeries({ status: `${s.n}. bölüm yükleniyor…${attempt ? ` (yedek oynatıcı ${attempt})` : ""}` });
+        try { await navigate(s.tabId, url); }
+        catch { await finishSeries("Sekme kapatıldı, durdu."); return; }
+        if (!(await seriesRunning())) break;
+        await setSeries({ status: `${s.n}. bölüm: video aranıyor…` });
+        item = await waitForVideo(s.tabId, attempt);
+        if (!(await seriesRunning())) break;
+      }
+      if (!(await seriesRunning())) break;
+      if (!item) {
+        await finishSeries(`${s.n}. bölümde video bulunamadı (${lastScan}). ${s.count || 0} bölüm sıraya eklendi.`);
+        break;
+      }
+      let tab;
+      try { tab = await chrome.tabs.get(s.tabId); } catch { await finishSeries("Sekme kapatıldı, durdu."); return; }
+      await queueDownload(tab, item.url, item.kind, item.ext, false, item, true);
+      await setSeries({ n: s.n + 1, count: (s.count || 0) + 1, status: `${s.n}. bölüm sıraya eklendi ✓` });
+    }
+  } finally {
+    clearInterval(keepAlive);
+    seriesLoop = false;
+  }
+}
+getSeries().then((s) => { if (s?.running) runSeries(); }); // servis yeniden başladıysa kaldığı yerden sürsün
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === "seriesStart") {
+    (async () => {
+      if ((await getSettings()).off) return sendResponse({ error: "Önce OFF düğmesini kapat." });
+      const tab = await chrome.tabs.get(msg.tabId);
+      const p = parseEpisodeUrl(tab.url);
+      if (!p) return sendResponse({ error: "Adreste bölüm numarası bulunamadı." });
+      await serEnq(() => chrome.storage.session.set({ series: {
+        running: true, tabId: tab.id, tpl: { pre: p.pre, post: p.post, width: p.width },
+        n: msg.n || p.n, last: msg.last || 0, count: 0, status: "Başlıyor…"
+      } }));
+      runSeries();
+      sendResponse({ ok: true });
+    })().catch((e) => sendResponse({ error: e.message }));
+    return true;
+  }
+  if (msg.type === "seriesStop") {
+    finishSeries("Durduruldu.");
     return;
   }
 });

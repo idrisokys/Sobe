@@ -127,6 +127,45 @@ async function prepDash(srcUrl, st, signal) {
   return { video: dashStream(vrep), audio: arep ? dashStream(arep) : null };
 }
 
+/* ---------- resim kılığındaki parçalar: başındaki sahte başlığı (JPEG/PNG vb.) kırp ----------
+   Parça gerçekte MPEG-TS ya da fMP4 ise, ilk gerçek paket/kutu başlangıcına kadar olan baytlar atılır. */
+function isTsAt(b, o) {
+  for (let k = 0; k < 4; k++) {
+    const p = o + 188 * k;
+    if (p >= b.length) return k >= 2;
+    if (b[p] !== 0x47) return false;
+  }
+  return true;
+}
+function findTs(b, lim) {
+  for (let o = b.indexOf(0x47); o >= 0 && o < lim; o = b.indexOf(0x47, o + 1)) if (isTsAt(b, o)) return o;
+  return -1;
+}
+function findMp4(b, lim) {
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  for (let o = 4; o < Math.min(lim, b.length - 8); o++) {
+    const c = b[o];
+    if (c !== 0x66 && c !== 0x73 && c !== 0x6d) continue; // f, s, m
+    const t = String.fromCharCode(c, b[o + 1], b[o + 2], b[o + 3]);
+    if (t !== "ftyp" && t !== "styp" && t !== "moof" && t !== "moov") continue;
+    const size = dv.getUint32(o - 4);
+    if (size >= 8 && o - 4 + size <= b.length) return o - 4; // kutunun başlangıcı
+  }
+  return -1;
+}
+function cleanSegment(b) {
+  const lim = Math.min(b.length, 1 << 20);
+  const ts = findTs(b, lim), mp = findMp4(b, lim);
+  if (ts >= 0 && (mp < 0 || ts < mp)) return { buf: ts ? b.subarray(ts) : b, kind: "ts" };
+  if (mp >= 0) return { buf: mp ? b.subarray(mp) : b, kind: "mp4" };
+  return { buf: b, kind: null };
+}
+// Parçaların gerçek türüne göre akışın biçimini düzeltir (uzantısı .jpeg olsa bile)
+function fixKind(s, role) {
+  if (s.kind === "mp4" && !s.isMp4) { s.isMp4 = true; s.mime = role === "audio" ? "audio/mp4" : "video/mp4"; s.ext = role === "audio" ? "m4a" : "mp4"; }
+  else if (s.kind === "ts" && s.isMp4) { s.isMp4 = false; s.mime = "video/mp2t"; s.ext = "ts"; }
+}
+
 /* ---------- indirme ---------- */
 async function downloadStreams(streams, report, signal) {
   const jobs = [];
@@ -155,6 +194,9 @@ async function downloadStreams(streams, report, signal) {
           const k = await getKey(j.it.key.uri);
           buf = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-CBC", iv: ivBytes(j.it) }, k, buf));
         }
+        const c = cleanSegment(buf);
+        buf = c.buf;
+        if (c.kind && !j.s.kind) j.s.kind = c.kind;
         j.s.out[j.i] = buf;
         partial.delete(j);
         done++;
@@ -201,6 +243,8 @@ async function runJob({ id, url, name, ref, kind }, st) {
     const { video, audio } = kind === "dash" ? await prepDash(url, st, signal) : await prepHls(url, st, signal);
     await downloadStreams([video, audio].filter(Boolean), report, signal);
     chk();
+    fixKind(video, "video");
+    if (audio) fixKind(audio, "audio");
 
     let note = "";
     if (!audio) {

@@ -2,8 +2,8 @@ const fmt = (b) => !b ? "?" : b > 1e9 ? (b/1e9).toFixed(2)+" GB" : (b/1e6).toFix
 const el = document.getElementById("list");
 const aboveBox = document.getElementById("above");
 const belowBox = document.getElementById("below");
-const autoBox = document.getElementById("auto");
 const offBox = document.getElementById("off");
+let offOn = false;
 let tab;
 const probing = new Set();
 
@@ -56,12 +56,13 @@ async function probePending(list) {
 }
 
 function applyOff() {
-  const off = offBox.checked;
-  aboveBox.disabled = belowBox.disabled = autoBox.disabled = off;
+  offBox.classList.toggle("on", offOn);
+  offBox.title = offOn ? "Algılama kapalı — açmak için tıkla" : "Algılamayı kapat";
+  aboveBox.disabled = belowBox.disabled = offOn;
 }
 
 async function render(doProbe = true) {
-  if (offBox.checked) {
+  if (offOn) {
     el.innerHTML = "";
     return;
   }
@@ -152,20 +153,40 @@ chrome.storage.onChanged.addListener((ch, area) => {
   if (area === "session" && ch.jobs) { jobs = ch.jobs.newValue || []; renderJobs(); }
 });
 
+/* ---------- seri modu ---------- */
+const epN = document.getElementById("epN"), epL = document.getElementById("epL");
+const serBtn = document.getElementById("serBtn"), serSt = document.getElementById("serSt"), serTpl = document.getElementById("serTpl");
+let series = null;
+function renderSeries() {
+  const run = !!(series && series.running);
+  epN.disabled = epL.disabled = run;
+  serBtn.textContent = run ? "Durdur" : "Başlat";
+  serBtn.className = run ? "stop" : "";
+  if (run) { epN.value = series.n; epL.value = series.last || ""; }
+  serSt.textContent = series && series.status ? series.status + (series.downloaded ? ` · ${series.downloaded} indirildi` : "") : "";
+}
+serBtn.onclick = async () => {
+  if (series && series.running) { chrome.runtime.sendMessage({ type: "seriesStop" }); return; }
+  const r = await chrome.runtime.sendMessage({ type: "seriesStart", tabId: tab.id, n: parseInt(epN.value, 10) || 0, last: parseInt(epL.value, 10) || 0 });
+  if (r && r.error) serSt.textContent = r.error;
+};
+chrome.storage.onChanged.addListener((ch, area) => {
+  if (area === "session" && ch.series) { series = ch.series.newValue || null; renderSeries(); }
+});
+
 (async () => {
   jobs = (await chrome.storage.session.get("jobs")).jobs || [];
   renderJobs();
   [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  const st = await chrome.storage.local.get({ above: true, below: true, auto: true, off: false });
-  autoBox.checked = st.auto;
-  offBox.checked = st.off;
+  const st = await chrome.storage.local.get({ above: true, below: true, off: false });
+  offOn = st.off;
   applyOff();
-  offBox.addEventListener("change", async () => {
-    await chrome.storage.local.set({ off: offBox.checked });
+  offBox.addEventListener("click", async () => {
+    offOn = !offOn;
+    await chrome.storage.local.set({ off: offOn });
     applyOff();
     render();
   });
-  autoBox.addEventListener("change", () => chrome.storage.local.set({ auto: autoBox.checked }));
   aboveBox.checked = st.above;
   belowBox.checked = st.below;
   aboveBox.addEventListener("change", async () => {
@@ -177,4 +198,9 @@ chrome.storage.onChanged.addListener((ch, area) => {
     render();
   });
   render();
+  series = (await chrome.storage.session.get("series")).series || null;
+  const p = parseEpisodeUrl(tab.url || "");
+  if (p) { serTpl.textContent = "…" + p.pre.split("/").pop() + "{N}" + p.post.split("?")[0]; if (!epN.value) epN.value = p.n; }
+  else { serTpl.textContent = "bölüm no bulunamadı"; serBtn.disabled = true; }
+  renderSeries();
 })();
