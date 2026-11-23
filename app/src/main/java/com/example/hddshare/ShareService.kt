@@ -3,6 +3,9 @@ package com.example.hddshare
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.AlarmManager
+import android.app.PendingIntent
+import android.os.SystemClock
 import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -99,7 +102,7 @@ class ShareService : Service() {
 
         if (wifiLock == null) {
             val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL, "hddshare:wifi").apply {
+            wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "hddshare:wifi").apply {
                 setReferenceCounted(false)
             }
         }
@@ -141,6 +144,21 @@ class ShareService : Service() {
             .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_menu_share)
             .build()
+    }
+
+    // Uygulama son uygulamalardan kapatılırsa sistem servisi de öldürebilir; 1,5 sn sonra yeniden başlat
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        try {
+            val pi = PendingIntent.getForegroundService(
+                this, 1, Intent(this, ShareService::class.java),
+                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+            )
+            (getSystemService(Context.ALARM_SERVICE) as AlarmManager)
+                .set(AlarmManager.ELAPSED_REALTIME, SystemClock.elapsedRealtime() + 1500, pi)
+        } catch (e: Exception) {
+            Log.e(TAG, "Yeniden başlatma kurulamadı", e)
+        }
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {

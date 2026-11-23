@@ -1,7 +1,7 @@
 const fmt = (b) => !b ? "?" : b > 1e9 ? (b/1e9).toFixed(2)+" GB" : (b/1e6).toFixed(1)+" MB";
 const el = document.getElementById("list");
-const aboveBox = document.getElementById("above");
-const belowBox = document.getElementById("below");
+const belowBtn = document.getElementById("below");
+let belowOn = false;
 const offBox = document.getElementById("off");
 let offOn = false;
 let tab;
@@ -58,7 +58,9 @@ async function probePending(list) {
 function applyOff() {
   offBox.classList.toggle("on", offOn);
   offBox.title = offOn ? "Algılama kapalı — açmak için tıkla" : "Algılamayı kapat";
-  aboveBox.disabled = belowBox.disabled = offOn;
+  belowBtn.disabled = offOn;
+  belowBtn.classList.toggle("on", belowOn);
+  belowBtn.title = belowOn ? "Bu sayfada 1080 altı aktif — kapatmak için tıkla" : "Bu sayfada 1080 ve altını göster";
 }
 
 async function render(doProbe = true) {
@@ -155,7 +157,7 @@ chrome.storage.onChanged.addListener((ch, area) => {
 
 /* ---------- seri modu ---------- */
 const epN = document.getElementById("epN"), epL = document.getElementById("epL");
-const serBtn = document.getElementById("serBtn"), serSt = document.getElementById("serSt"), serTpl = document.getElementById("serTpl");
+const serBtn = document.getElementById("serBtn"), serSt = document.getElementById("serSt");
 let series = null;
 function renderSeries() {
   const run = !!(series && series.running);
@@ -178,7 +180,9 @@ chrome.storage.onChanged.addListener((ch, area) => {
   jobs = (await chrome.storage.session.get("jobs")).jobs || [];
   renderJobs();
   [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  const st = await chrome.storage.local.get({ above: true, below: true, off: false });
+  const st = await chrome.storage.local.get({ off: false });
+  const bk = "bl_" + tab.id;
+  belowOn = !!(await chrome.storage.session.get(bk))[bk];
   offOn = st.off;
   applyOff();
   offBox.addEventListener("click", async () => {
@@ -187,20 +191,17 @@ chrome.storage.onChanged.addListener((ch, area) => {
     applyOff();
     render();
   });
-  aboveBox.checked = st.above;
-  belowBox.checked = st.below;
-  aboveBox.addEventListener("change", async () => {
-    await chrome.storage.local.set({ above: aboveBox.checked });
-    render();
-  });
-  belowBox.addEventListener("change", async () => {
-    await chrome.storage.local.set({ below: belowBox.checked });
+  belowBtn.addEventListener("click", async () => {
+    belowOn = !belowOn;
+    if (belowOn) await chrome.storage.session.set({ [bk]: true });
+    else await chrome.storage.session.remove(bk);
+    applyOff();
     render();
   });
   render();
   series = (await chrome.storage.session.get("series")).series || null;
   const p = parseEpisodeUrl(tab.url || "");
-  if (p) { serTpl.textContent = "…" + p.pre.split("/").pop() + "{N}" + p.post.split("?")[0]; if (!epN.value) epN.value = p.n; }
-  else { serTpl.textContent = "bölüm no bulunamadı"; serBtn.disabled = true; }
+  if (p) { if (!epN.value) epN.value = p.n; }
+  else serBtn.disabled = true;
   renderSeries();
 })();

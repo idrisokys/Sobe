@@ -210,7 +210,9 @@ async function downloadStreams(streams, report, signal) {
 
 // Kaydeder ve indirme bitene kadar bekler (blob adresi belge kapanınca geçersiz olur).
 // chrome.downloads offscreen belgede yok; kaydı arka plan başlatır.
+let curDir = "";
 async function save(parts, type, filename, signal) {
+  if (curDir) filename = curDir + "/" + filename;
   const url = URL.createObjectURL(new Blob(parts, { type }));
   try {
     const r = await rpc({ type: "save-blob", url, filename });
@@ -229,7 +231,8 @@ async function save(parts, type, filename, signal) {
 
 const ctrls = new Map();   // iş id -> AbortController
 const precancel = new Set(); // başlamadan iptal edilenler
-async function runJob({ id, url, name, ref, kind }, st) {
+async function runJob({ id, url, name, ref, kind, folder }, st) {
+  curDir = folder || "";
   const report = reporter(id);
   const ac = new AbortController();
   const signal = ac.signal;

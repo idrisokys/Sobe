@@ -35,21 +35,24 @@ async function getList(tabId) {
   const r = await chrome.storage.session.get(key(tabId));
   return r[key(tabId)] || [];
 }
-async function getSettings() {
-  const r = await chrome.storage.local.get({ above: true, below: true, off: false });
-  return { above: !!r.above, below: !!r.below, off: !!r.off };
+const belowKey = (tabId) => `bl_${tabId}`;
+// "1080 altı" yalnızca ilgili sekme/sayfa için etkindir; varsayılan her zaman 1080 üstü
+async function getSettings(tabId) {
+  const r = await chrome.storage.local.get({ off: false });
+  let below = false;
+  if (tabId != null && tabId >= 0) below = !!(await chrome.storage.session.get(belowKey(tabId)))[belowKey(tabId)];
+  return { above: !below, below, off: !!r.off };
 }
 const itemHeights = (v) => (v.heights && v.heights.length ? v.heights : v.height ? [v.height] : null);
-// 1080p ve üstü / 1080p ve altı kutucukları; ikisi de seçili (ya da ikisi de boş) = filtre yok
+// Varsayılan: 1080p ve üstü; "1080 altı" etkinse 1080p ve altı
 function passes(v, s) {
-  if (s.above === s.below) return true;
   const hs = itemHeights(v); // kalite bilinmiyorsa listede kalır
   if (!hs) return true;
   return hs.some((h) => (s.above ? h >= 1080 : h <= 1080));
 }
 const pendingDims = new Map();
 async function refreshBadge(tabId, list) {
-  const st = await getSettings();
+  const st = await getSettings(tabId);
   const n = st.off ? 0 : list.filter((v) => passes(v, st)).length;
   chrome.action.setBadgeText({ tabId, text: n ? String(n) : "" }).catch(() => {});
 }
@@ -59,7 +62,8 @@ async function setList(tabId, list) {
 }
 chrome.storage.onChanged.addListener((ch, area) => {
   if (area === "local" && ch.off) applyIcon();
-  if (area !== "local" || !(ch.above || ch.below || ch.off)) return;
+  const belowChanged = area === "session" && Object.keys(ch).some((k) => k.startsWith("bl_"));
+  if (!belowChanged && !(area === "local" && ch.off)) return;
   enqueue(async () => {
     const tabs = await chrome.tabs.query({});
     for (const t of tabs) await refreshBadge(t.id, await getList(t.id));
@@ -243,9 +247,14 @@ chrome.webRequest.onHeadersReceived.addListener((d) => {
 }, { urls: ["<all_urls>"], types: ["media", "xmlhttprequest", "other"] }, ["responseHeaders"]);
 
 chrome.tabs.onUpdated.addListener((tabId, info) => {
-  if (info.status === "loading" && info.url) enqueue(() => setList(tabId, []));
+  if (info.status === "loading" && info.url) enqueue(async () => {
+    // sayfa değişince "1080 altı" sıfırlanır (seri modu bu sekmede çalışıyorsa korunur)
+    const s = await getSeries().catch(() => null);
+    if (!(s && s.running && s.tabId === tabId)) await chrome.storage.session.remove(belowKey(tabId));
+    await setList(tabId, []);
+  });
 });
-chrome.tabs.onRemoved.addListener((tabId) => chrome.storage.session.remove(key(tabId)));
+chrome.tabs.onRemoved.addListener((tabId) => chrome.storage.session.remove([key(tabId), belowKey(tabId)]));
 
 /* ---------- indirme işleri (popup'ta ilerleme çubuğu olarak gösterilir) ---------- */
 let jobQ = Promise.resolve();
@@ -293,7 +302,7 @@ async function startJob(job) {
       if (!(await getJobs()).some((j) => j.id === job.id)) return; // başlamadan iptal edildi
       await chrome.runtime.sendMessage({
         type: "off-start", st,
-        job: { id: job.id, url: job.url, name: job.name, ref: job.ref, kind: job.kind }
+        job: { id: job.id, url: job.url, name: job.name, ref: job.ref, kind: job.kind, folder: job.folder || "" }
       });
     } else {
       await setReferer(job.ref);
@@ -391,10 +400,38 @@ async function setDlReferer(ref) {
 
 /* ---------- indirme ---------- */
 // auto=true: aynı adres bu oturumda daha önce otomatik eklendiyse (bitmiş, silinmiş ya da sayfa yenilenmiş olsa da) tekrar eklenmez
+const cleanDir = (s) => String(s || "").split(/[\\/]+/)
+  .map((p) => p.replace(/[:*?"<>|\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().replace(/[. ]+$/, ""))
+  .filter((p) => p && p !== "." && p !== "..").join("/");
+// Ortak başlık klasörü: "Psyren 1. Bölüm izle | Site" -> "Psyren"; bölüm no yoksa başlığın kendisi klasör olur
+function groupFolder(title) {
+  let t = String(title || "").split(/\s+[|–—]\s+|\s+-\s+(?=\D*$)/)[0].trim();
+  let m = /^(.*?)[\s\-_.:,]*(?:\d+\s*[.\-]?\s*(?:sezon|season)\s*)?\d+\s*[.\-]?\s*(?:bölüm|bolum|episode|ep)(?![\p{L}])/iu.exec(t)
+    || /^(.*?)[\s\-_.:,]*(?:bölüm|bolum|episode|ep\.?)\s*\d+/iu.exec(t)
+    || /^(.*?\D)[\s\-_.]*\d+\s*$/u.exec(t);
+  // bölüm no yoksa (tek film vb.) klasör adı başlığın kendisi olur
+  return cleanDir((m ? m[1] : t).replace(/[\\/]+/g, " "));
+}
+// Seri modunda başlıktan çıkmazsa adres kalıbından klasör adı üretilir
+async function seriesFolder(title) {
+  const g = groupFolder(title);
+  if (g) return g;
+  const s = await getSeries();
+  let seg = "";
+  try {
+    const parts = new URL(s.tpl.pre).pathname.split("/").filter(Boolean);
+    seg = (parts[parts.length - 1] || "").replace(/[-_ ]+$/, "");
+    if (!seg || /^(bolum|episode|ep)$/i.test(seg)) seg = parts[parts.length - 2] || new URL(s.tpl.pre).hostname;
+  } catch {}
+  seg = decodeURIComponent(seg).replace(/[-_]+/g, " ").trim();
+  return cleanDir(seg.replace(/\b\p{L}/gu, (c) => c.toUpperCase())) || "Seri";
+}
 async function queueDownload(tab, url, kind, ext, auto = false, item = null, fromSeries = false) {
   const name = sanitize(tab.title);
   const isStream = kind === "hls" || kind === "dash";
-  const filename = `${name}.${ext}`;
+  const folder = fromSeries ? await seriesFolder(tab.title) : groupFolder(tab.title);
+  const shortName = `${name}.${ext}`;
+  const filename = folder ? `${folder}/${shortName}` : shortName;
   let added = false;
   await jobEnq(async () => {
     const jobs = await getJobs();
@@ -408,7 +445,7 @@ async function queueDownload(tab, url, kind, ext, auto = false, item = null, fro
     }
     jobs.push({
       id: crypto.randomUUID(), url, ref: tab.url, kind, state: "queued", pct: 0, fromSeries,
-      name: isStream ? name : filename, filename, text: "Sırada bekliyor…"
+      name: isStream ? name : shortName, filename, folder, text: "Sırada bekliyor…"
     });
     await chrome.storage.session.set({ jobs });
     added = true;
@@ -433,7 +470,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === "list") {
     enqueue(async () => {
-      const st = await getSettings();
+      const st = await getSettings(msg.tabId);
       const list = await getList(msg.tabId);
       sendResponse(list.filter((v) => passes(v, st)));
     });
@@ -546,7 +583,7 @@ async function waitForVideo(tabId, alt = 0) {
   while (Date.now() - t0 < SERIES_TIMEOUT) {
     if (!(await seriesRunning())) return null;
     chrome.tabs.sendMessage(tabId, { type: "tryPlay", alt }).catch(() => {}); // tüm çerçevelerde oynatmayı dene
-    const list = await getList(tabId), cfg = await getSettings();
+    const list = await getList(tabId), cfg = await getSettings(tabId);
     const item = pickItem(list, cfg);
     lastScan = `algılanan: ${list.length}, canlı: ${list.filter((v) => v.live).length}, filtreye takılan: ${list.filter((v) => !v.live && !passes(v, cfg)).length}`;
     if (item) { firstSeen ||= Date.now(); if (Date.now() - firstSeen >= SERIES_SETTLE) return item; }
