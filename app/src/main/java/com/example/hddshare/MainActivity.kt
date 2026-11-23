@@ -11,6 +11,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.net.Uri
 import android.provider.Settings
+import android.view.WindowManager
 import android.widget.TextView
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -34,6 +35,7 @@ class MainActivity : Activity() {
         }
         setContentView(tv)
         window.decorView.setBackgroundColor(Color.BLACK)
+        if (Config.KEEP_SCREEN_ON) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         if (checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE), 1)

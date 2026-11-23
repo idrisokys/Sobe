@@ -30,6 +30,7 @@ class ShareService : Service() {
     private var server: FileServer? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var screenLock: PowerManager.WakeLock? = null
     private var lastText: String? = null
     @Volatile private var running = false
 
@@ -117,6 +118,18 @@ class ShareService : Service() {
             }
             wakeLock?.let { if (!it.isHeld) it.acquire() }
         }
+
+        // Cihazın (ekran/bekleme modu) uykuya geçmesini engelle; uyku, USB diski ve Wi-Fi'ı da keser
+        if (Config.KEEP_SCREEN_ON) {
+            if (screenLock == null) {
+                val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                @Suppress("DEPRECATION")
+                screenLock = pm.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK, "hddshare:screen").apply {
+                    setReferenceCounted(false)
+                }
+            }
+            screenLock?.let { if (!it.isHeld) it.acquire() }
+        }
     }
 
     @Synchronized
@@ -125,6 +138,7 @@ class ShareService : Service() {
         server = null
         wifiLock?.let { if (it.isHeld) it.release() }
         wakeLock?.let { if (it.isHeld) it.release() }
+        screenLock?.let { if (it.isHeld) it.release() }
     }
 
     private fun updateNotification() {

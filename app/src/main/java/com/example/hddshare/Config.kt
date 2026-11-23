@@ -11,6 +11,9 @@ object Config {
     /** true: CPU'yu uyanık tutar (stick uykuya geçince paylaşım kopmasın). Sadece disk takılıyken aktif. */
     val KEEP_CPU_AWAKE = true
 
+    /** true: disk takılıyken ekranı/cihazı uykuya geçirmez (film izlerken stick uyumasın). Uyku istersen false yap. */
+    val KEEP_SCREEN_ON = true
+
     /** Diskin takılı olup olmadığı bu aralıkla kontrol edilir (ms). */
     val CHECK_INTERVAL_MS = 5000L
 }
