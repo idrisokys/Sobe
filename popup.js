@@ -124,8 +124,8 @@ function renderJobs() {
     const fp = j.kind === "file" && j.state === "running" ? fileProg.get(j.dlId) : null;
     const ind = !!(fp && fp.ind);
     e.root.className = "job " + j.state + (ind ? " ind" : "");
-    e.nm.textContent = j.name;
-    e.nm.title = j.name;
+    e.nm.textContent = j.label || j.name;
+    e.nm.title = j.label || j.name;
     e.fill.style.width = ind ? "" : (fp ? fp.pct : j.pct || 0) + "%";
     e.st.textContent = j.state === "queued" ? `Sırada bekliyor · ${++qpos}. sıra` : ((fp ? fp.text : j.text) || "");
     e.x.title = j.state === "running" ? "İndirmeyi iptal et" : j.state === "queued" ? "Sıradan çıkar" : "Kaldır";

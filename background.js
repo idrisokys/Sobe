@@ -426,12 +426,28 @@ async function seriesFolder(title) {
   seg = decodeURIComponent(seg).replace(/[-_]+/g, " ").trim();
   return cleanDir(seg.replace(/\b\p{L}/gu, (c) => c.toUpperCase())) || "Seri";
 }
+// Dosya adı yalnız bölüm numarası: 01, 02 ... Film / bölüm no bulunamazsa 01
+const pad2 = (n) => String(n).padStart(2, "0");
+function episodeNo(title, href) {
+  const t = String(title || "");
+  let m = /(\d+)\s*[.\-]?\s*(?:bölüm|bolum|episode|ep)(?![\p{L}])/iu.exec(t)
+    || /(?:bölüm|bolum|episode|ep\.?)\s*(\d+)/iu.exec(t);
+  if (!m) {
+    try {
+      const p = new URL(href).pathname;
+      m = /(\d+)(?=-(?:bolum|episode|ep)(?:[-/]|$))/i.exec(p) || /(?:bolum|episode|ep)-(\d+)/i.exec(p);
+    } catch {}
+  }
+  const n = m ? parseInt(m[1], 10) : 1;
+  return n > 0 ? n : 1;
+}
 async function queueDownload(tab, url, kind, ext, auto = false, item = null, fromSeries = false) {
-  const name = sanitize(tab.title);
   const isStream = kind === "hls" || kind === "dash";
-  const folder = fromSeries ? await seriesFolder(tab.title) : groupFolder(tab.title);
+  const folder = fromSeries ? await seriesFolder(tab.title) : (groupFolder(tab.title) || sanitize(tab.title));
+  const epN = fromSeries ? ((await getSeries())?.n || episodeNo(tab.title, tab.url)) : episodeNo(tab.title, tab.url);
+  const name = pad2(epN);
   const shortName = `${name}.${ext}`;
-  const filename = folder ? `${folder}/${shortName}` : shortName;
+  const filename = `${folder}/${shortName}`;
   let added = false;
   await jobEnq(async () => {
     const jobs = await getJobs();
@@ -445,7 +461,7 @@ async function queueDownload(tab, url, kind, ext, auto = false, item = null, fro
     }
     jobs.push({
       id: crypto.randomUUID(), url, ref: tab.url, kind, state: "queued", pct: 0, fromSeries,
-      name: isStream ? name : shortName, filename, folder, text: "Sırada bekliyor…"
+      name: isStream ? name : shortName, label: `${folder} / ${shortName}`, filename, folder, text: "Sırada bekliyor…"
     });
     await chrome.storage.session.set({ jobs });
     added = true;
