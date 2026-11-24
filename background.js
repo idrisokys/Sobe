@@ -406,11 +406,13 @@ const cleanDir = (s) => String(s || "").split(/[\\/]+/)
 // Ortak başlık klasörü: "Psyren 1. Bölüm izle | Site" -> "Psyren"; bölüm no yoksa başlığın kendisi klasör olur
 function groupFolder(title) {
   let t = String(title || "").split(/\s+[|–—]\s+|\s+-\s+(?=\D*$)/)[0].trim();
-  let m = /^(.*?)[\s\-_.:,]*(?:\d+\s*[.\-]?\s*(?:sezon|season)\s*)?\d+\s*[.\-]?\s*(?:bölüm|bolum|episode|ep)(?![\p{L}])/iu.exec(t)
+  let m = /^(.*?)[\s\-_.:,]*(?:(\d+\s*[.\-]?\s*(?:sezon|season))\s*)?\d+\s*[.\-]?\s*(?:bölüm|bolum|episode|ep)(?![\p{L}])(?!\s+\d{1,3}(?![\d\p{L}]))/iu.exec(t)
     || /^(.*?)[\s\-_.:,]*(?:bölüm|bolum|episode|ep\.?)\s*\d+/iu.exec(t)
     || /^(.*?\D)[\s\-_.]*\d+\s*$/u.exec(t);
+  // sezon bilgisi klasör adında kalır: "Slay The Gods 2. Sezon 5. Bölüm" -> "Slay The Gods 2. Sezon"
+  const season = m && m[2] ? m[2].replace(/^(\d+)\s*[.\-]?\s*/, "$1. ").trim() : "";
   // bölüm no yoksa (tek film vb.) klasör adı başlığın kendisi olur
-  return cleanDir((m ? m[1] : t).replace(/[\\/]+/g, " "));
+  return cleanDir(((m ? m[1] : t) + (season ? " " + season : "")).replace(/[\\/]+/g, " "));
 }
 // Seri modunda başlıktan çıkmazsa adres kalıbından klasör adı üretilir
 async function seriesFolder(title) {
@@ -430,7 +432,7 @@ async function seriesFolder(title) {
 const pad2 = (n) => String(n).padStart(2, "0");
 function episodeNo(title, href) {
   const t = String(title || "");
-  let m = /(\d+)\s*[.\-]?\s*(?:bölüm|bolum|episode|ep)(?![\p{L}])/iu.exec(t)
+  let m = /(\d+)\s*[.\-]?\s*(?:bölüm|bolum|episode|ep)(?![\p{L}])(?!\s+\d{1,3}(?![\d\p{L}]))/iu.exec(t)
     || /(?:bölüm|bolum|episode|ep\.?)\s*(\d+)/iu.exec(t);
   if (!m) {
     try {
