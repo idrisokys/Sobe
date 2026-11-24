@@ -111,7 +111,7 @@ async function setReferer(ref) {
 }
 
 /* ---------- tespit ---------- */
-async function handleHls(tabId, url, pre = null) {
+async function handleHls(tabId, url, pre = null, frameId = -1) {
   if (await isOff()) return;
   const exists = (await getList(tabId)).some((v) => v.url === url);
   if (exists) return;
@@ -126,7 +126,7 @@ async function handleHls(tabId, url, pre = null) {
       if (r.ok) parsed = parsePlaylist(await r.text(), url);
     }
   } catch {}
-  let item = { url, size: 0, ext: "ts", kind: "hls", label: "HLS" };
+  let item = { url, size: 0, ext: "ts", kind: "hls", label: "HLS", frameId };
   if (parsed && parsed.master) {
     if (!parsed.variants.length) return;
     const best = parsed.variants[0];
@@ -143,7 +143,7 @@ async function handleHls(tabId, url, pre = null) {
   enqueue(() => addItem(tabId, item));
 }
 
-async function handleDash(tabId, url) {
+async function handleDash(tabId, url, frameId = -1) {
   if (await isOff()) return;
   if ((await getList(tabId)).some((v) => v.url === url)) return;
   let tab;
@@ -163,25 +163,25 @@ async function handleDash(tabId, url) {
   }
   if (info.audio.length) label += " · ses dahil";
   const members = [...info.video, ...info.audio].filter((r) => r.single).map((r) => r.base);
-  enqueue(() => addItem(tabId, { url, size: 0, ext: "mp4", kind: "dash", label, heights, members }));
+  enqueue(() => addItem(tabId, { url, size: 0, ext: "mp4", kind: "dash", label, heights, members, frameId }));
 }
 
-function addFile(tabId, url, size, ext) {
-  enqueue(() => addItem(tabId, { url, size, ext, kind: "file" }));
+function addFile(tabId, url, size, ext, frameId = -1) {
+  enqueue(() => addItem(tabId, { url, size, ext, kind: "file", frameId }));
 }
 
-async function handleFound(tabId, url) {
+async function handleFound(tabId, url, frameId = -1) {
   if (await isOff()) return;
-  if (HLS_RE.test(url)) return handleHls(tabId, url);
-  if (DASH_RE.test(url)) return handleDash(tabId, url);
+  if (HLS_RE.test(url)) return handleHls(tabId, url, null, frameId);
+  if (DASH_RE.test(url)) return handleDash(tabId, url, frameId);
   if (SEGMENT_RE.test(url) || CHUNK_RE.test(url)) return;
   const em = url.match(VIDEO_EXT);
-  if (em) return addFile(tabId, url, 0, em[1].toLowerCase());
+  if (em) return addFile(tabId, url, 0, em[1].toLowerCase(), frameId);
   try {
     const r = await fetch(url, { method: "HEAD" });
     const type = (r.headers.get("content-type") || "").split(";")[0].toLowerCase();
     if (type.startsWith("video/")) {
-      addFile(tabId, url, parseInt(r.headers.get("content-length") || "0", 10), TYPE_EXT[type] || "mp4");
+      addFile(tabId, url, parseInt(r.headers.get("content-length") || "0", 10), TYPE_EXT[type] || "mp4", frameId);
     }
   } catch {}
 }
@@ -195,7 +195,7 @@ function maybePlaylist(url, type, h) {
   if (!SNIFF_TYPES.has(type) || STATIC_EXT.test(url)) return false;
   return parseInt(h["content-length"] || "0", 10) <= 2 * 1024 * 1024;
 }
-async function sniffPlaylist(tabId, url) {
+async function sniffPlaylist(tabId, url, frameId = -1) {
   if (sniffed.has(url) || (await isOff())) return;
   sniffed.add(url);
   if (sniffed.size > 800) sniffed.delete(sniffed.values().next().value);
@@ -212,7 +212,7 @@ async function sniffPlaylist(tabId, url) {
     const chunks = [first.value];
     for (;;) { const x = await reader.read(); if (x.done) break; chunks.push(x.value); }
     const text = new TextDecoder().decode(await new Blob(chunks).arrayBuffer());
-    await handleHls(tabId, url, text);
+    await handleHls(tabId, url, text, frameId);
   } catch {}
 }
 
@@ -223,14 +223,14 @@ chrome.webRequest.onHeadersReceived.addListener((d) => {
   const type = (h["content-type"] || "").split(";")[0].trim().toLowerCase();
 
   if (type.includes("mpegurl") || (HLS_RE.test(d.url) && !type.startsWith("text/html"))) {
-    handleHls(d.tabId, d.url);
+    handleHls(d.tabId, d.url, null, d.frameId);
     return;
   }
   if (type.includes("dash+xml") || (DASH_RE.test(d.url) && !type.startsWith("text/html"))) {
-    handleDash(d.tabId, d.url);
+    handleDash(d.tabId, d.url, d.frameId);
     return;
   }
-  if (maybePlaylist(d.url, type, h)) { sniffPlaylist(d.tabId, d.url); return; }
+  if (maybePlaylist(d.url, type, h)) { sniffPlaylist(d.tabId, d.url, d.frameId); return; }
   if (SEGMENT_RE.test(d.url) || CHUNK_RE.test(d.url)) return;
   const isVideo = type.startsWith("video/") || (VIDEO_EXT.test(d.url) && !type.startsWith("text/"));
   if (!isVideo) return;
@@ -243,7 +243,7 @@ chrome.webRequest.onHeadersReceived.addListener((d) => {
     const em = d.url.match(VIDEO_EXT);
     ext = em ? em[1].toLowerCase() : "mp4";
   }
-  addFile(d.tabId, d.url, size, ext);
+  addFile(d.tabId, d.url, size, ext, d.frameId);
 }, { urls: ["<all_urls>"], types: ["media", "xmlhttprequest", "other"] }, ["responseHeaders"]);
 
 chrome.tabs.onUpdated.addListener((tabId, info) => {
@@ -276,10 +276,11 @@ async function commitJobs(jobs, j) {
   }
   await chrome.storage.session.set({ jobs });
 }
-const patchJob = (id, patch) => jobEnq(async () => {
+const patchJob = (id, patch, run) => jobEnq(async () => {
   const jobs = await getJobs();
   const j = jobs.find((x) => x.id === id);
   if (!j) return;
+  if (run != null && (j.run || 0) !== run) return; // tekrar denenen işin eski denemesinden gelen güncelleme
   Object.assign(j, patch);
   await commitJobs(jobs, j);
   if (isEnd(patch)) pump();
@@ -302,7 +303,7 @@ async function startJob(job) {
       if (!(await getJobs()).some((j) => j.id === job.id)) return; // başlamadan iptal edildi
       await chrome.runtime.sendMessage({
         type: "off-start", st,
-        job: { id: job.id, url: job.url, name: job.name, ref: job.ref, kind: job.kind, folder: job.folder || "" }
+        job: { id: job.id, url: job.url, name: job.name, ref: job.ref, kind: job.kind, folder: job.folder || "", run: job.run || 0 }
       });
     } else {
       await setReferer(job.ref);
@@ -342,15 +343,37 @@ const cancelJob = (id) => jobEnq(async () => {
   const j = jobs.find((x) => x.id === id);
   if (!j) return;
   await chrome.storage.session.set({ jobs: jobs.filter((x) => x.id !== id) });
-  if (j.state !== "running") return;
+  if (j.kind !== "file") chrome.runtime.sendMessage({ type: "off-drop", id }).catch(() => {});
+  if (j.state !== "running") { maybeCloseOffscreen(); return; }
   if (j.kind === "file") { if (j.dlId != null) chrome.downloads.cancel(j.dlId).catch(() => {}); }
   else chrome.runtime.sendMessage({ type: "off-cancel", id }).catch(() => {});
   pump();
   maybeCloseOffscreen();
 });
-const removeJobs = (pred) => jobEnq(async () => {
-  const jobs = (await getJobs()).filter((j) => !pred(j));
+// Hatalı ya da takılmış (iniyor deyip ilerlemeyen) işi durdurup baştan sıraya koyar
+const retryJob = (id) => jobEnq(async () => {
+  const jobs = await getJobs();
+  const j = jobs.find((x) => x.id === id);
+  if (!j || (j.state !== "error" && j.state !== "running")) return;
+  if (j.state === "running") {
+    if (j.kind === "file") { if (j.dlId != null) chrome.downloads.cancel(j.dlId).catch(() => {}); }
+    else chrome.runtime.sendMessage({ type: "off-cancel", id }).catch(() => {});
+  }
+  j.run = (j.run || 0) + 1; // eski denemenin geç raporlarını yok saymak için
+  j.state = "queued";
+  j.pct = 0;
+  j.dlId = null;
+  j.text = "Sırada bekliyor…";
+  delete j.startedAt;
   await chrome.storage.session.set({ jobs });
+  pump();
+});
+const removeJobs = (pred) => jobEnq(async () => {
+  const all = await getJobs(), jobs = all.filter((j) => !pred(j));
+  await chrome.storage.session.set({ jobs });
+  const ids = all.filter((j) => pred(j) && j.kind !== "file").map((j) => j.id);
+  if (ids.length) chrome.runtime.sendMessage({ type: "off-drop", ids }).catch(() => {});
+  maybeCloseOffscreen();
 });
 
 function syncFileState(dlId, state) {
@@ -377,7 +400,7 @@ async function ensureOffscreen() {
 }
 const maybeCloseOffscreen = () => jobEnq(async () => {
   const jobs = await getJobs();
-  if (jobs.some((j) => j.kind !== "file" && (j.state === "running" || j.state === "queued"))) return;
+  if (jobs.some((j) => j.kind !== "file" && (j.state === "running" || j.state === "queued" || j.state === "error"))) return; // hatalı iş: inmiş parçalar belleğte kalsın
   chrome.offscreen.closeDocument().catch(() => {});
 });
 
@@ -404,8 +427,12 @@ const cleanDir = (s) => String(s || "").split(/[\\/]+/)
   .map((p) => p.replace(/[:*?"<>|\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().replace(/[. ]+$/, ""))
   .filter((p) => p && p !== "." && p !== "..").join("/");
 // Ortak başlık klasörü: "Psyren 1. Bölüm izle | Site" -> "Psyren"; bölüm no yoksa başlığın kendisi klasör olur
+// "26. Final Bölüm" / "Bölüm 26 Final" -> "26. Bölüm" / "Bölüm 26" (bölüm numarası ayrıştırması bozulmasın)
+const stripFinal = (t) => String(t || "")
+  .replace(/(\d+\s*[.\-]?\s*)final(?:i)?\s+(?=(?:bölüm|bolum|episode|ep)(?![\p{L}]))/giu, "$1")
+  .replace(/((?:bölüm|bolum|episode|ep\.?)\s*\d+)\s+final(?:i)?(?![\p{L}])/giu, "$1");
 function groupFolder(title) {
-  let t = String(title || "").split(/\s+[|–—]\s+|\s+-\s+(?=\D*$)/)[0].trim();
+  let t = stripFinal(title).split(/\s+[|–—]\s+|\s+-\s+(?=\D*$)/)[0].trim();
   let m = /^(.*?)[\s\-_.:,]*(?:(\d+\s*[.\-]?\s*(?:sezon|season))\s*)?\d+\s*[.\-]?\s*(?:bölüm|bolum|episode|ep)(?![\p{L}])(?!\s+\d{1,3}(?![\d\p{L}]))/iu.exec(t)
     || /^(.*?)[\s\-_.:,]*(?:bölüm|bolum|episode|ep\.?)\s*\d+/iu.exec(t)
     || /^(.*?\D)[\s\-_.]*\d+\s*$/u.exec(t);
@@ -431,7 +458,7 @@ async function seriesFolder(title) {
 // Dosya adı yalnız bölüm numarası: 01, 02 ... Film / bölüm no bulunamazsa 01
 const pad2 = (n) => String(n).padStart(2, "0");
 function episodeNo(title, href) {
-  const t = String(title || "");
+  const t = stripFinal(title);
   let m = /(\d+)\s*[.\-]?\s*(?:bölüm|bolum|episode|ep)(?![\p{L}])(?!\s+\d{1,3}(?![\d\p{L}]))/iu.exec(t)
     || /(?:bölüm|bolum|episode|ep\.?)\s*(\d+)/iu.exec(t);
   if (!m) {
@@ -443,11 +470,12 @@ function episodeNo(title, href) {
   const n = m ? parseInt(m[1], 10) : 1;
   return n > 0 ? n : 1;
 }
-async function queueDownload(tab, url, kind, ext, auto = false, item = null, fromSeries = false) {
+async function queueDownload(tab, url, kind, ext, auto = false, item = null, fromSeries = false, customName = "") {
   const isStream = kind === "hls" || kind === "dash";
   const folder = fromSeries ? await seriesFolder(tab.title) : (groupFolder(tab.title) || sanitize(tab.title));
   const epN = fromSeries ? ((await getSeries())?.n || episodeNo(tab.title, tab.url)) : episodeNo(tab.title, tab.url);
-  const name = pad2(epN);
+  // elle yazılan ad varsa dosya bu adla iner (uzantı yazıldıysa tekrarlanmaz)
+  const name = customName && customName.trim() ? sanitize(String(customName).replace(new RegExp("\\." + ext + "$", "i"), "")) : pad2(epN);
   const shortName = `${name}.${ext}`;
   const filename = `${folder}/${shortName}`;
   let added = false;
@@ -483,7 +511,7 @@ function sanitize(title) {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "found") {
-    if (sender.tab) handleFound(sender.tab.id, msg.url);
+    if (sender.tab) handleFound(sender.tab.id, msg.url, sender.frameId);
     return;
   }
   if (msg.type === "list") {
@@ -509,13 +537,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === "download") {
     chrome.tabs.get(msg.tabId)
-      .then((tab) => queueDownload(tab, msg.url, msg.kind, msg.ext))
+      .then((tab) => queueDownload(tab, msg.url, msg.kind, msg.ext, false, null, false, msg.name))
       .then(() => sendResponse(true))
       .catch(() => sendResponse(false));
     return true;
   }
   if (msg.type === "jobUpdate") {
-    patchJob(msg.id, msg.patch).then(() => {
+    patchJob(msg.id, msg.patch, msg.run).then(() => {
       if (msg.patch.state && msg.patch.state !== "running") maybeCloseOffscreen();
     });
     return;
@@ -537,6 +565,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === "jobRemove") {
     cancelJob(msg.id);
+    return;
+  }
+  if (msg.type === "jobRetry") {
+    retryJob(msg.id);
     return;
   }
   if (msg.type === "dl-cancel") {
@@ -621,26 +653,32 @@ async function runSeries() {
       const s = await getSeries();
       if (!s || !s.running) break;
       if (s.last && s.n > s.last) { await finishSeries(`Bitti ✓ ${s.count || 0} bölüm sıraya eklendi (son: ${s.last})`); break; }
-      const url = episodeUrl(s.tpl, s.n);
+      // Adaylar: normal adres, sonra "final" ifadeli adres (son bölümlerde: ...-26-final-bolum-izle)
+      const cands = episodeUrls(s.tpl, s.n);
+      const gone = (r) => r.status === 404 || r.status === 410;
+      const exists = async (u) => { try { return !gone(await fetch(u, { credentials: "include" })); } catch { return true; } };
       await setSeries({ status: `${s.n}. bölüm kontrol ediliyor…` });
 
-      try { // sayfa hiç yoksa bölümler bitmiştir
-        const r = await fetch(url, { credentials: "include" });
-        if (r.status === 404 || r.status === 410) {
-          await finishSeries(`${s.n}. bölüm sayfası yok. Bitti ✓ ${s.count || 0} bölüm sıraya eklendi`);
-          break;
+      let item = null, tried = 0, finalUsed = false;
+      for (const url of cands) {
+        if (item || !(await seriesRunning())) break;
+        if (!(await exists(url))) continue; // bu adreste sayfa yok -> sıradaki aday
+        tried++;
+        if (url !== cands[0]) { finalUsed = true; await setSeries({ status: `${s.n}. bölüm: final adresi deneniyor…` }); }
+        for (let attempt = 0; attempt < 3 && !item; attempt++) {
+          await setSeries({ status: `${s.n}. bölüm yükleniyor…${finalUsed ? " (final)" : ""}${attempt ? ` (yedek oynatıcı ${attempt})` : ""}` });
+          try { await navigate(s.tabId, url); }
+          catch { await finishSeries("Sekme kapatıldı, durdu."); return; }
+          if (!(await seriesRunning())) break;
+          await setSeries({ status: `${s.n}. bölüm: video aranıyor…` });
+          item = await waitForVideo(s.tabId, attempt);
+          if (!(await seriesRunning())) break;
         }
-      } catch {}
-
-      let item = null;
-      for (let attempt = 0; attempt < 3 && !item; attempt++) {
-        await setSeries({ status: `${s.n}. bölüm yükleniyor…${attempt ? ` (yedek oynatıcı ${attempt})` : ""}` });
-        try { await navigate(s.tabId, url); }
-        catch { await finishSeries("Sekme kapatıldı, durdu."); return; }
-        if (!(await seriesRunning())) break;
-        await setSeries({ status: `${s.n}. bölüm: video aranıyor…` });
-        item = await waitForVideo(s.tabId, attempt);
-        if (!(await seriesRunning())) break;
+      }
+      if (!(await seriesRunning())) break;
+      if (!tried) { // ne normal ne final adreste sayfa var: bölümler bitmiştir
+        await finishSeries(`${s.n}. bölüm sayfası yok. Bitti ✓ ${s.count || 0} bölüm sıraya eklendi`);
+        break;
       }
       if (!(await seriesRunning())) break;
       if (!item) {

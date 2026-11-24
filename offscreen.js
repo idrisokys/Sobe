@@ -3,36 +3,64 @@
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const rpc = (msg) => chrome.runtime.sendMessage(msg);
 
-function reporter(id) {
+function reporter(id, run) {
   let last = 0;
   return (patch, force = false) => {
     const now = Date.now();
     if (!force && now - last < 250) return;
     last = now;
-    rpc({ type: "jobUpdate", id, patch }).catch(() => {});
+    rpc({ type: "jobUpdate", id, run, patch }).catch(() => {});
   };
 }
 
 /* ---------- ağ ---------- */
-async function readBody(r, onFrac) {
+const IDLE_MS = 30000; // bu kadar süre hiç veri gelmezse istek takılmış sayılır ve yeniden denenir
+const RETRY_HTTP = new Set([408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524]);
+class HttpError extends Error {
+  constructor(status, retryAfter) { super("HTTP " + status); this.status = status; this.retryAfter = retryAfter; }
+}
+const isOverload = (e) => e instanceof HttpError && (e.status === 429 || e.status === 503);
+const retryable = (e) => !(e instanceof HttpError) || RETRY_HTTP.has(e.status);
+// Retry-After: saniye ya da tarih
+function retryAfterMs(r) {
+  const v = r.headers.get("retry-after");
+  if (!v) return 0;
+  const n = Number(v);
+  if (!isNaN(n)) return Math.max(0, n * 1000);
+  const d = Date.parse(v);
+  return isNaN(d) ? 0 : Math.max(0, d - Date.now());
+}
+
+async function readBody(r, onFrac, kick) {
   const total = +r.headers.get("content-length") || 0;
-  if (!onFrac || !total || !r.body) return new Uint8Array(await r.arrayBuffer());
+  if (!r.body) return new Uint8Array(await r.arrayBuffer());
   const reader = r.body.getReader(), chunks = [];
   let got = 0;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
+    kick?.();
     chunks.push(value); got += value.length;
-    onFrac(Math.min(1, got / total));
+    if (onFrac && total) onFrac(Math.min(1, got / total));
   }
   const out = new Uint8Array(got);
   let p = 0;
   for (const c of chunks) { out.set(c, p); p += c.length; }
   return out;
 }
-// range: "a-b" | "a-" (isteğe bağlı), onFrac: büyük tek dosyalar için ilerleme
-async function getBuf(u, { range, onFrac, tries = 4, signal } = {}) {
+// range: "a-b" | "a-" (isteğe bağlı), onFrac: büyük tek dosyalar için ilerleme,
+// onOverload: sunucu 429/503 verdiğinde çağrılır (eşzamanlı istek sayısını düşürmek için)
+async function getBuf(u, { range, onFrac, tries = 8, signal, onOverload } = {}) {
   for (let i = 0; i < tries; i++) {
+    if (signal?.aborted) throw new Error("İptal edildi");
+    const ac = new AbortController();
+    const onAbort = () => ac.abort();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    let timer, timedOut = false;
+    const kick = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { timedOut = true; ac.abort(); }, IDLE_MS);
+    };
     try {
       const headers = {};
       let a = 0, b;
@@ -42,21 +70,29 @@ async function getBuf(u, { range, onFrac, tries = 4, signal } = {}) {
         headers.Range = `bytes=${a}-${b ?? ""}`;
       }
       onFrac?.(0);
-      const r = await fetch(u, { credentials: "include", headers, signal });
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      let buf = await readBody(r, range ? null : onFrac);
+      kick();
+      const r = await fetch(u, { credentials: "include", headers, signal: ac.signal });
+      if (!r.ok) throw new HttpError(r.status, retryAfterMs(r));
+      let buf = await readBody(r, range ? null : onFrac, kick);
       if (range && r.status === 200) buf = buf.subarray(a, b === undefined ? undefined : b + 1); // sunucu Range'i yok saydı
       return buf;
     } catch (e) {
-      if (signal?.aborted || i === tries - 1) throw e;
-      await sleep(600 * (i + 1));
+      if (signal?.aborted) throw e;
+      const err = timedOut ? new Error("Zaman aşımı (sunucu yanıt vermiyor)") : e;
+      if (isOverload(err)) onOverload?.();
+      if (i === tries - 1 || !retryable(err)) throw err;
+      // 429/503: Retry-After'a uy, yoksa üstel bekleme (1, 2, 4, 8… en çok 30 sn) + rastgele sapma
+      const base = isOverload(err) ? Math.min(30000, 1000 * 2 ** i) : 600 * (i + 1);
+      const wait = Math.min(60000, Math.max(err.retryAfter || 0, base)) + Math.random() * 500;
+      await sleep(wait);
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
     }
   }
 }
 async function getText(u, signal) {
-  const r = await fetch(u, { credentials: "include", signal });
-  if (!r.ok) throw new Error("HTTP " + r.status);
-  return r.text();
+  return new TextDecoder().decode(await getBuf(u, { signal }));
 }
 
 function ivBytes(seg) {
@@ -167,32 +203,60 @@ function fixKind(s, role) {
 }
 
 /* ---------- indirme ---------- */
+// Yoğun sunucu: başarısız parçalar işi düşürmez, sona bırakılıp soğuma süresiyle yeniden denenir.
+// Zaten inen parçalar (s.out) korunur; "tekrar dene" kaldığı yerden devam eder.
 async function downloadStreams(streams, report, signal) {
   const jobs = [];
-  for (const s of streams) { s.out = new Array(s.items.length); s.items.forEach((it, i) => jobs.push({ s, it, i })); }
-  const total = jobs.length, unit = jobs.length <= 2 ? "dosya" : "parça";
+  for (const s of streams) {
+    if (!s.out) s.out = new Array(s.items.length);
+    s.items.forEach((it, i) => { if (!s.out[i]) jobs.push({ s, it, i }); });
+  }
+  const total = streams.reduce((n, s) => n + s.items.length, 0), unit = total <= 2 ? "dosya" : "parça";
+  let done = total - jobs.length;
   const keys = new Map();
   const getKey = (uri) => {
     if (!keys.has(uri))
       keys.set(uri, getBuf(uri, { signal }).then((b) => crypto.subtle.importKey("raw", b, "AES-CBC", false, ["decrypt"])));
     return keys.get(uri);
   };
-  let done = 0, next = 0, failed = false;
   const partial = new Map();
-  const show = () => {
+  // Eşzamanlı istek sayısı: 4'ten başlar; sunucu 429/503 verirse yarıya iner, başarılar sürdükçe yavaşça geri çıkar.
+  // gap: aşırı yüklenmede her isteğin arasına konan bekleme (ms)
+  const MAX_CONC = 4;
+  let limit = MAX_CONC, okStreak = 0, lastDrop = 0, gap = 0, note = "";
+  const onOverload = () => {
+    okStreak = 0;
+    if (Date.now() - lastDrop < 3000) return; // aynı anda gelen hatalar tek düşüş sayılır
+    lastDrop = Date.now();
+    limit = Math.max(1, Math.floor(limit / 2));
+    gap = Math.min(3000, gap ? gap * 2 : 400);
+  };
+  const onOk = () => {
+    if (++okStreak < 15) return;
+    okStreak = 0;
+    if (gap) gap = gap > 400 ? Math.floor(gap / 2) : 0;
+    else if (limit < MAX_CONC) limit++;
+  };
+  const show = (force) => {
     let p = done;
     for (const f of partial.values()) p += f;
-    report({ pct: +Math.min(100, (p / total) * 100).toFixed(1), text: `${done} / ${total} ${unit} indiriliyor…` });
+    report({ pct: +Math.min(100, (p / total) * 100).toFixed(1), text: `${done} / ${total} ${unit} indiriliyor…${note}` }, force);
   };
-  const worker = async () => {
-    try {
-      while (next < jobs.length && !failed && !signal.aborted) {
-        const j = jobs[next++];
+  let queue = jobs.slice(), failedJobs = [], fatal = null;
+  const worker = async (k) => {
+    await sleep(k * 150); // istekleri aynı anda patlatma
+    while (!fatal && !signal.aborted) {
+      if (k >= limit) { if (!queue.length) return; await sleep(300); continue; } // sunucu zorlanıyorsa fazla işçiler bekler
+      const j = queue.shift();
+      if (!j) return;
+      try {
+        if (gap) await sleep(gap + Math.random() * gap * 0.5);
         const onFrac = total <= 2 ? (f) => { partial.set(j, f); show(); } : null;
-        let buf = await getBuf(j.it.url, { range: j.it.range, onFrac, signal });
+        let buf = await getBuf(j.it.url, { range: j.it.range, onFrac, signal, onOverload });
+        onOk();
         if (j.it.key) {
-          const k = await getKey(j.it.key.uri);
-          buf = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-CBC", iv: ivBytes(j.it) }, k, buf));
+          const kk = await getKey(j.it.key.uri);
+          buf = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-CBC", iv: ivBytes(j.it) }, kk, buf));
         }
         const c = cleanSegment(buf);
         buf = c.buf;
@@ -201,11 +265,35 @@ async function downloadStreams(streams, report, signal) {
         partial.delete(j);
         done++;
         show();
+      } catch (e) {
+        partial.delete(j);
+        if (signal.aborted) return;
+        if (retryable(e)) { j.err = e; failedJobs.push(j); onOverload(); } // sona bırak, işi düşürme
+        else { fatal = e; return; }
       }
-    } catch (e) { failed = true; throw e; }
+    }
   };
-  await Promise.all(Array.from({ length: 6 }, worker));
+  const runPool = () => Promise.all(Array.from({ length: MAX_CONC }, (_, k) => worker(k)));
+  await runPool();
+  // Başarısız parçalar: soğuma süresiyle, tek tek, en çok 4 tur
+  for (let round = 1; failedJobs.length && !fatal && !signal.aborted && round <= 4; round++) {
+    const wait = 10 + round * 10; // 20, 30, 40, 50 sn
+    for (let t = wait; t > 0 && !signal.aborted; t--) {
+      note = ` · ${failedJobs.length} parça sunucu yoğunluğu nedeniyle bekliyor (${round}. tur, ${t} sn)`;
+      show(true);
+      await sleep(1000);
+    }
+    note = ` · ${round}. tur yeniden deneniyor`;
+    queue = failedJobs; failedJobs = [];
+    limit = 1; gap = Math.max(gap, 800);
+    await runPool();
+  }
   if (signal.aborted) throw new Error("İptal edildi");
+  if (fatal) throw fatal;
+  if (failedJobs.length) {
+    const e = failedJobs[0].err;
+    throw new Error(`${e.message} — ${failedJobs.length} parça inemedi. ↻ ile kaldığı yerden devam eder`);
+  }
 }
 
 // Kaydeder ve indirme bitene kadar bekler (blob adresi belge kapanınca geçersiz olur).
@@ -229,11 +317,12 @@ async function save(parts, type, filename, signal) {
   }
 }
 
+const prepared = new Map(); // iş id -> { video, audio } (hata sonrası devam için tutulur)
 const ctrls = new Map();   // iş id -> AbortController
 const precancel = new Set(); // başlamadan iptal edilenler
-async function runJob({ id, url, name, ref, kind, folder }, st) {
+async function runJob({ id, url, name, ref, kind, folder, run }, st) {
   curDir = folder || "";
-  const report = reporter(id);
+  const report = reporter(id, run);
   const ac = new AbortController();
   const signal = ac.signal;
   ctrls.set(id, ac);
@@ -243,7 +332,9 @@ async function runJob({ id, url, name, ref, kind, folder }, st) {
     chk();
     await rpc({ type: "dl-referer", ref });
     report({ text: "Akış okunuyor…" }, true);
-    const { video, audio } = kind === "dash" ? await prepDash(url, st, signal) : await prepHls(url, st, signal);
+    let pre = prepared.get(id); // önceki denemeden kalan akış + inmiş parçalar
+    if (!pre) { pre = kind === "dash" ? await prepDash(url, st, signal) : await prepHls(url, st, signal); prepared.set(id, pre); }
+    const { video, audio } = pre;
     await downloadStreams([video, audio].filter(Boolean), report, signal);
     chk();
     fixKind(video, "video");
@@ -270,16 +361,18 @@ async function runJob({ id, url, name, ref, kind, folder }, st) {
       }
     }
     report({ state: "done", pct: 100, text: "Bitti ✓" + note }, true);
+    prepared.delete(id);
   } catch (e) {
     if (!signal.aborted) report({ state: "error", text: "Hata: " + e.message }, true);
   } finally {
-    ctrls.delete(id);
+    if (ctrls.get(id) === ac) ctrls.delete(id); // tekrar denenen işin yeni denetleyicisini silme
   }
 }
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (!msg) return;
   if (msg.type === "off-start") runJob(msg.job, msg.st);
+  if (msg.type === "off-drop") (msg.ids || [msg.id]).forEach((i) => prepared.delete(i));
   if (msg.type === "off-cancel") {
     const ac = ctrls.get(msg.id);
     if (ac) ac.abort(); else precancel.add(msg.id);

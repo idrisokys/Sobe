@@ -3,7 +3,7 @@
 <style>
 :root{color-scheme:dark;--ac:#ff1a1a;--ac-h:#ff4040;--ac-t:#ff5a5a;--ac-x:#ff3b3b;--ac-xbg:#ff3b3b26;--ac-xh:#ff6b6b}
 *{box-sizing:border-box}
-body{margin:0;padding:8px;width:260px;background:#1a1a1e;color:#e8e8ec;font:12px/1.3 -apple-system,system-ui,sans-serif}
+body{margin:0;padding:8px;width:300px;background:#1a1a1e;color:#e8e8ec;font:12px/1.3 -apple-system,system-ui,sans-serif}
 .bar{display:flex;justify-content:space-between;gap:6px;padding-bottom:6px;border-bottom:1px solid #ffffff1f}
 .bar label{display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap}
 .bar input{margin:0;accent-color:var(--ac)}
@@ -28,6 +28,9 @@ button:hover{background:var(--ac-h)}
 .job .row{display:flex;align-items:center;justify-content:space-between;gap:6px}
 .job .nm{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .job .x{background:none;color:var(--ac-x);padding:2px;flex:none;display:flex;align-items:center;border-radius:3px}
+.job .rt{background:none;color:#7fb2ff;padding:2px;flex:none;display:flex;align-items:center;border-radius:3px;margin-left:auto}
+.job .rt[hidden]{display:none}
+.job .rt:hover{background:#7fb2ff26;color:#a9ccff}
 .job .x:hover{background:var(--ac-xbg);color:var(--ac-xh)}
 .track{height:5px;background:#ffffff1f;border-radius:3px;overflow:hidden;margin:4px 0 2px}
 .fill{height:100%;width:0;background:var(--ac);border-radius:3px;transition:width .25s}
@@ -39,18 +42,24 @@ button:hover{background:var(--ac-h)}
 .job .st{opacity:.65;font-size:11px;word-break:break-word}
 #series{margin:8px 0 2px;padding-bottom:8px;border-bottom:1px solid #ffffff1f}
 #series .srow.top{justify-content:flex-end;margin-top:0}
+#list{display:flex;gap:6px}
+#nm{flex:1;min-width:0;padding:3px 6px;border-radius:4px;border:1px solid #ffffff33;background:#26262c;color:inherit;font:inherit}
+#nm[hidden]{display:none}
+#list button{font-weight:700;padding:3px 12px}
 #series .srow{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:5px}
 #series label{display:flex;align-items:center;gap:4px;white-space:nowrap}
 #series input[type=number]{width:46px;padding:2px 4px;border-radius:4px;border:1px solid #ffffff33;background:#26262c;color:inherit;font:inherit}
 #series input:disabled{opacity:.5}
 #serBtn.stop{background:#555}
+#hint{margin-top:4px;color:#ffc857;font-size:11px;word-break:break-word}
+#hint[hidden]{display:none}
 #serSt{margin-top:4px;opacity:.75;font-size:11px;word-break:break-word}
 </style></head>
 <body>
 <div id="series">
-  <div class="srow top"><button id="below" class="offb" title="Bu sayfada 1080 ve altını göster">1080 altı</button><button id="off" class="offb" title="Algılamayı kapat">OFF</button></div>
+  <div class="srow top"><input id="nm" type="text" placeholder="Dosya adı (isteğe bağlı)" hidden><span id="list"></span><button id="below" class="offb" title="Bu sayfada 1080 ve altını göster">1080 altı</button><button id="off" class="offb" title="Algılamayı kapat">OFF</button></div>
+  <div id="hint" hidden></div>
   <div class="srow"><label>Bölüm <input id="epN" type="number" min="1"></label><label>Son <input id="epL" type="number" min="1" placeholder="∞"></label><button id="serBtn">Başlat</button></div>
   <div id="serSt"></div>
 </div>
-<div id="list"></div>
 <div id="jobs" hidden><div class="jobs-h"><b>İndirilenler</b><button id="clear">Temizle</button></div><div id="jobList"></div></div><script src="series.js"></script><script src="popup.js"></script></body></html>

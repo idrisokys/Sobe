@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Sobe",
-  "version": "1.23",
+  "version": "1.29",
   "minimum_chrome_version": "116",
   "description": "Sayfadaki videoları yakalar, sayfa başlığıyla indirir.",
   "permissions": [
@@ -10,7 +10,8 @@
     "tabs",
     "storage",
     "declarativeNetRequest",
-    "offscreen"
+    "offscreen",
+    "scripting"
   ],
   "host_permissions": [
     "<all_urls>"

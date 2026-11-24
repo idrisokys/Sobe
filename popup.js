@@ -1,5 +1,6 @@
 const fmt = (b) => !b ? "?" : b > 1e9 ? (b/1e9).toFixed(2)+" GB" : (b/1e6).toFixed(1)+" MB";
 const el = document.getElementById("list");
+const nmInput = document.getElementById("nm");
 const belowBtn = document.getElementById("below");
 let belowOn = false;
 const offBox = document.getElementById("off");
@@ -63,6 +64,45 @@ function applyOff() {
   belowBtn.title = belowOn ? "Bu sayfada 1080 altı aktif — kapatmak için tıkla" : "Bu sayfada 1080 ve altını göster";
 }
 
+
+const hintEl = document.getElementById("hint");
+function showHint(t) { hintEl.textContent = t || ""; hintEl.hidden = !t; }
+
+// Sekmedeki tüm çerçevelerdeki <video> öğelerinin durumunu okur (hangisi oynuyor?)
+async function playingVideos() {
+  try {
+    const res = await chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: true },
+      func: () => [...document.querySelectorAll("video")].map((v) => ({
+        playing: !v.paused && !v.ended,
+        started: v.currentTime > 0 && !v.ended,
+        src: v.currentSrc || v.src || "",
+        area: v.clientWidth * v.clientHeight
+      }))
+    });
+    return res.flatMap((r) => (r.result || []).map((x) => ({ ...x, frameId: r.frameId })));
+  } catch { return null; }
+}
+
+// Oynatılan videoya karşılık gelen kaydı seçer:
+// 1) adresi birebir eşleşen  2) aynı çerçeveden gelen en yeni  3) (blob: gibi) eşleşmezse listedeki en yeni
+function pickPlaying(list, vids) {
+  if (!list.length) return null;
+  if (!vids || !vids.length) return list[list.length - 1]; // video öğesi okunamadı: elde en yeni olan
+  const groups = [vids.filter((x) => x.playing), vids.filter((x) => !x.playing && x.started)];
+  for (const g of groups) {
+    g.sort((a, b) => b.area - a.area); // küçük önizlemeler yerine ana oynatıcı
+    for (const pv of g) {
+      const exact = list.find((it) => it.url === pv.src || (it.members || []).includes(pv.src) || (it.variants || []).includes(pv.src));
+      if (exact) return exact;
+      const inFrame = list.filter((it) => it.frameId === pv.frameId);
+      if (inFrame.length) return inFrame[inFrame.length - 1];
+    }
+    if (g.length) return list[list.length - 1];
+  }
+  return null; // videolar var ama hiçbiri oynamıyor
+}
+
 async function render(doProbe = true) {
   if (offOn) {
     el.innerHTML = "";
@@ -70,24 +110,21 @@ async function render(doProbe = true) {
   }
   const list = await chrome.runtime.sendMessage({ type: "list", tabId: tab.id });
   el.innerHTML = "";
-  if (!list || !list.length) {
-    el.innerHTML = "";
-    return;
-  }
-  list.forEach((v) => {
-    const pending = v.kind === "file" && !v.height && !v.probed;
-    const title = v.kind !== "file"
-      ? v.label
-      : `${v.ext.toUpperCase()} · ${fmt(v.size)} · ${v.height ? v.height + "p" : pending ? "kalite…" : "kalite ?"}`;
-    const d = document.createElement("div");
-    d.className = "item";
-    d.innerHTML = `<b></b><button>İndir</button>`;
-    d.querySelector("b").textContent = title;
-    d.title = title + "\n" + v.url;
-    d.querySelector("button").onclick = () =>
-      chrome.runtime.sendMessage({ type: "download", tabId: tab.id, url: v.url, ext: v.ext, kind: v.kind });
-    el.appendChild(d);
-  });
+  nmInput.hidden = !(list && list.length);
+  if (!list || !list.length) return;
+  // Tek düğme: yalnızca o an OYNATILAN video iner
+  const d = document.createElement("button");
+  d.textContent = "İndir";
+  d.title = "Oynatılan videoyu indirir (ad yazılırsa o adla kaydedilir)\n" + list.map((v) => v.url).join("\n");
+  d.onclick = async () => {
+    const v = pickPlaying(list, await playingVideos());
+    if (!v) { showHint("Oynatılan video bulunamadı — önce videoyu oynat."); return; }
+    showHint("");
+    const name = nmInput.value.trim(); // doluysa dosya bu adla iner
+    chrome.runtime.sendMessage({ type: "download", tabId: tab.id, url: v.url, ext: v.ext, kind: v.kind, name });
+    nmInput.value = "";
+  };
+  el.appendChild(d);
   if (doProbe) probePending(list);
 }
 
@@ -115,8 +152,9 @@ function renderJobs() {
     let e = jobEls.get(j.id);
     if (!e) {
       const root = document.createElement("div");
-      root.innerHTML = `<div class="row"><span class="nm"></span><button class="x" title="Kaldır"><svg width="9" height="9" viewBox="0 0 10 10"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg></button></div><div class="track"><div class="fill"></div></div><div class="st"></div>`;
-      e = { root, nm: root.querySelector(".nm"), x: root.querySelector(".x"), fill: root.querySelector(".fill"), st: root.querySelector(".st") };
+      root.innerHTML = `<div class="row"><span class="nm"></span><button class="rt" title="Tekrar dene"><svg width="11" height="11" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.6-5.9M20 3v5h-5" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg></button><button class="x" title="Kaldır"><svg width="9" height="9" viewBox="0 0 10 10"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg></button></div><div class="track"><div class="fill"></div></div><div class="st"></div>`;
+      e = { root, nm: root.querySelector(".nm"), rt: root.querySelector(".rt"), x: root.querySelector(".x"), fill: root.querySelector(".fill"), st: root.querySelector(".st") };
+      e.rt.onclick = () => chrome.runtime.sendMessage({ type: "jobRetry", id: j.id });
       e.x.onclick = () => chrome.runtime.sendMessage({ type: "jobRemove", id: j.id });
       jobEls.set(j.id, e);
     }
@@ -128,6 +166,8 @@ function renderJobs() {
     e.nm.title = j.label || j.name;
     e.fill.style.width = ind ? "" : (fp ? fp.pct : j.pct || 0) + "%";
     e.st.textContent = j.state === "queued" ? `Sırada bekliyor · ${++qpos}. sıra` : ((fp ? fp.text : j.text) || "");
+    e.rt.hidden = !(j.state === "error" || j.state === "running"); // hatalı ya da takılan indirme için
+    e.rt.title = j.state === "running" ? "Takıldıysa durdurup baştan başlat" : "Tekrar dene";
     e.x.title = j.state === "running" ? "İndirmeyi iptal et" : j.state === "queued" ? "Sıradan çıkar" : "Kaldır";
   }
   ensurePoll();
